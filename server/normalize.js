@@ -52,6 +52,7 @@ export function normalizeExternalMenu(raw, { organizationId }) {
           weight: s.portionWeightGrams || null,
           image: firstUrl(s.buttonImageUrl, s.buttonImageCroppedUrl),
           nutrition: nutrition(s.nutritionPerHundredGrams),
+          unitType: s.measureUnitType ?? null,
         }))
         .filter((s) => s.price !== null);
       if (!sizes.length) continue; // без цены блюдо не продаётся в этой категории цен
@@ -65,7 +66,7 @@ export function normalizeExternalMenu(raw, { organizationId }) {
         image: main.image ?? sizes.find((s) => s.image)?.image ?? firstUrl(item.buttonImageUrl),
         price: main.price,
         weight: main.weight,
-        unit: /мл|ml|л$/i.test(item.measureUnit ?? '') ? 'мл' : 'г',
+        unit: /LIT|MILLI/i.test(main.unitType ?? '') || /мл|ml|л$/i.test(item.measureUnit ?? '') ? 'мл' : 'г',
         nutrition: main.nutrition,
         sizes: sizes.length > 1 ? sizes.map(({ name, price, weight }) => ({ name, price, weight })) : [],
         allergens: names(item.allergens ?? item.allergenGroups),

@@ -97,13 +97,14 @@ export class IikoClient {
     return this.call('/api/2/menu', {});
   }
 
-  menuById({ externalMenuId, organizationIds, priceCategoryId, version, language }) {
+  // Без language iiko отвечает 500 Internal Server Error, поэтому он передаётся всегда.
+  menuById({ externalMenuId, organizationIds, priceCategoryId, version, language = 'ru' }) {
     return this.call('/api/2/menu/by_id', {
       externalMenuId,
       organizationIds,
       ...(priceCategoryId ? { priceCategoryId } : {}),
       ...(version ? { version } : {}),
-      ...(language ? { language } : {}),
+      language: language || 'ru',
     });
   }
 

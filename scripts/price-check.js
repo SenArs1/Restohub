@@ -41,7 +41,7 @@ try {
   const { org, menu } = await resolveTargets(client, config.iiko);
   const [nom, raw] = await Promise.all([
     client.nomenclature(org.id),
-    client.menuById({ externalMenuId: menu.id, organizationIds: [org.id], priceCategoryId: config.iiko.priceCategoryId, version: config.iiko.menuVersion }),
+    client.menuById({ externalMenuId: menu.id, organizationIds: [org.id], priceCategoryId: config.iiko.priceCategoryId, version: config.iiko.menuVersion, language: config.iiko.language }),
   ]);
   const base = nomenclaturePrices(nom);
   const ext = externalPrices(raw, org.id);

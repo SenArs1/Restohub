@@ -16,3 +16,10 @@ test('normalizeExternalMenu: цены, размеры, скрытые позиц
   assert.deepEqual(item.tags, ['Хит']);
   assert.equal(item.nutrition.energy, 398);
 });
+
+test('normalizeExternalMenu: миллилитры по measureUnitType', () => {
+  const raw = externalMenu();
+  raw.itemCategories[0].items[0].itemSizes[0].measureUnitType = 'MILLILITER';
+  const [item] = normalizeExternalMenu(raw, { organizationId: ORG }).categories[0].items;
+  assert.equal(item.unit, 'мл');
+});

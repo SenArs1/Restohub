@@ -12,7 +12,7 @@ export const externalMenu = (price = 420) => ({
           itemSizes: [
             { sizeName: 'Кусочек', isDefault: true, portionWeightGrams: 150, buttonImageUrl: 'IMG',
               prices: [{ organizationId: ORG, price }], nutritionPerHundredGrams: { energy: 398, proteins: 5, fats: 21, carbs: 46 } },
-            { sizeName: 'Целый', portionWeightGrams: 1500, prices: [{ organizationId: ORG, price: 3900 }] },
+            { sizeName: 'Целый', portionWeightGrams: 1500, measureUnitType: 'GRAM', prices: [{ organizationId: ORG, price: 3900 }] },
           ],
         },
         { itemId: 'p-2', name: 'Скрытый', isHidden: true, itemSizes: [{ prices: [{ organizationId: ORG, price: 1 }] }] },
