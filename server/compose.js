@@ -15,10 +15,28 @@ export function mediaUrls(media) {
 }
 
 const sortKey = (overlaySort, index) => (Number.isFinite(overlaySort) ? overlaySort : 100000 + index);
-const stopKey = (itemId, sizeId) => `${itemId}:${sizeId ?? ''}`;
 
-function isStopped(stop, itemId, sizeId) {
-  return stop.has(stopKey(itemId, null)) || (sizeId != null && stop.has(stopKey(itemId, sizeId)));
+/** Стоп-лист как Map<productId, Set<sizeId|''>>: '' — стоп на товар целиком. */
+function indexStopList(keys) {
+  const map = new Map();
+  for (const key of keys) {
+    const i = key.indexOf(':');
+    const [product, size] = [key.slice(0, i), key.slice(i + 1)];
+    if (!map.has(product)) map.set(product, new Set());
+    map.get(product).add(size);
+  }
+  return map;
+}
+
+/**
+ * Закончился ли размер блюда. Стоп на товар целиком останавливает все размеры.
+ * У блюда с одним размером любой стоп по этому товару значит «закончилось»: iiko может прислать
+ * sizeId шкалы размеров, даже если во внешнем меню размер один и без sizeId.
+ */
+function isStopped(stop, itemId, sizeId, singleSize) {
+  const sizes = stop.get(String(itemId));
+  if (!sizes) return false;
+  return sizes.has('') || singleSize || (sizeId != null && sizes.has(String(sizeId)));
 }
 
 /**
@@ -28,7 +46,7 @@ function isStopped(stop, itemId, sizeId) {
  * @param media     Map<mediaId, { id, widths, width, height }>
  */
 export function composeMenu({ snapshot, overlay = emptyOverlay(), stopList = [], media = new Map() }) {
-  const stop = new Set(stopList);
+  const stop = indexStopList(stopList);
   const soldOutMode = overlay.settings?.soldOutMode === 'hide' ? 'hide' : 'mark';
   const images = (ids) => (ids ?? []).map((id) => media.get(id)).filter(Boolean).map(mediaUrls);
 
@@ -42,8 +60,8 @@ export function composeMenu({ snapshot, overlay = emptyOverlay(), stopList = [],
       const io = overlay.items?.[item.id] ?? {};
       if (io.hidden) return;
 
-      const sizes = item.sizes.map((s) => ({ ...s, soldOut: isStopped(stop, item.id, s.sizeId) }));
-      const soldOut = sizes.length ? sizes.every((s) => s.soldOut) : isStopped(stop, item.id, item.sizeId);
+      const sizes = item.sizes.map((s) => ({ ...s, soldOut: isStopped(stop, item.id, s.sizeId, false) }));
+      const soldOut = sizes.length ? sizes.every((s) => s.soldOut) : isStopped(stop, item.id, item.sizeId, true);
       if (soldOut && soldOutMode === 'hide') return;
 
       const own = images(io.photos);

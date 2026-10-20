@@ -30,6 +30,8 @@ export const config = {
   currency: env('CURRENCY', '₽'),
   syncIntervalMin: num('SYNC_INTERVAL_MIN', 5),
   stopListIntervalSec: num('STOPLIST_INTERVAL_SEC', 60),
+  // Через сколько минут без успешной синхронизации данные считаются устаревшими (предупреждение в админке).
+  staleAfterMin: num('STALE_AFTER_MIN', 0),
   cookieSecure: flag('COOKIE_SECURE', false),
   cacheImages: flag('CACHE_IMAGES', true),
   adminToken: env('ADMIN_TOKEN'),

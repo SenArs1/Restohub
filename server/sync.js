@@ -7,15 +7,23 @@ import { IikoClient, resolveTargets } from './iiko.js';
 import { normalizeExternalMenu } from './normalize.js';
 import { findPriceMismatches } from './prices.js';
 import { demoMenu } from './demo-menu.js';
-import { parseStopList } from './stoplist.js';
+import { parseStopList, stopListGroups } from './stoplist.js';
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 
-async function writeJsonAtomic(file, data) {
-  const tmp = `${file}.tmp`;
-  await writeFile(tmp, JSON.stringify(data));
+async function writeAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  await writeFile(tmp, data);
   await rename(tmp, file);
 }
+const writeJsonAtomic = (file, data) => writeAtomic(file, JSON.stringify(data));
+
+const countItems = (content) => content.categories.reduce((n, c) => n + c.items.length, 0);
+
+// Защита от сбойного ответа iiko: если блюд стало меньше половины (при прежних ≥ 10),
+// новое меню не применяется автоматически, а ждёт подтверждения владельца.
+const SHRINK_MIN_ITEMS = 10;
+const SHRINK_RATIO = 0.5;
 
 /**
  * Снимок данных iiko: внешнее меню (по расписанию) и стоп-лист (раз в минуту).
@@ -27,13 +35,16 @@ export class IikoSync extends EventEmitter {
     super();
     this.config = config;
     this.snapshotFile = path.join(config.dataDir, 'iiko-snapshot.json');
+    this.prevSnapshotFile = path.join(config.dataDir, 'iiko-snapshot.prev.json');
     this.mediaDir = path.join(config.dataDir, 'media');
-    this.snapshot = null; // { version, fetchedAt, content }
+    this.snapshot = null; // { version, fetchedAt (когда меню изменилось), checkedAt (последняя успешная загрузка), content }
+    this.held = null; // меню, удержанное защитой от резкого сокращения: { version, content, count, prevCount, at }
     this.stopList = [];
     this.status = {
       source: config.demo ? 'demo' : 'iiko', lastSyncAt: null, lastSuccessAt: null, lastError: null, syncing: false,
       priceCheck: null,
-      stopList: null,
+      stopList: null, // { checkedAt, lastSuccessAt, count, groups, error }
+      held: null,
     };
     this.client = config.demo ? null : new IikoClient(config.iiko);
     this.targets = null;
@@ -42,14 +53,8 @@ export class IikoSync extends EventEmitter {
 
   async init() {
     await mkdir(this.mediaDir, { recursive: true });
-    if (!this.config.demo && existsSync(this.snapshotFile)) {
-      try {
-        this.snapshot = JSON.parse(await readFile(this.snapshotFile, 'utf8'));
-        this.status.lastSuccessAt = this.snapshot.fetchedAt;
-      } catch (err) {
-        console.warn('[sync] не удалось прочитать снимок iiko:', err.message);
-      }
-    }
+    if (!this.config.demo) this.snapshot = await this.#loadSnapshot();
+    if (this.snapshot) this.status.lastSuccessAt = this.snapshot.checkedAt ?? this.snapshot.fetchedAt;
     await this.sync();
     await this.refreshStopList();
     this.timers.push(setInterval(() => this.sync(), this.config.syncIntervalMin * 60 * 1000));
@@ -61,6 +66,52 @@ export class IikoSync extends EventEmitter {
     for (const t of this.timers) clearInterval(t);
   }
 
+  /** Снимок с диска; если основной файл повреждён — предыдущий. */
+  async #loadSnapshot() {
+    for (const file of [this.snapshotFile, this.prevSnapshotFile]) {
+      if (!existsSync(file)) continue;
+      try {
+        const snap = JSON.parse(await readFile(file, 'utf8'));
+        if (!snap?.content?.categories) throw new Error('нет content.categories');
+        if (file === this.prevSnapshotFile) console.warn('[sync] основной снимок iiko повреждён, загружен предыдущий');
+        return snap;
+      } catch (err) {
+        console.warn(`[sync] не удалось прочитать ${path.basename(file)}:`, err.message);
+      }
+    }
+    return null;
+  }
+
+  async #saveSnapshot(changed) {
+    if (this.config.demo) return;
+    // Перед заменой основного снимка сохраняем предыдущую рабочую версию.
+    if (changed && existsSync(this.snapshotFile)) {
+      await writeAtomic(this.prevSnapshotFile, await readFile(this.snapshotFile));
+    }
+    await writeJsonAtomic(this.snapshotFile, this.snapshot);
+  }
+
+  #apply(content, version, now) {
+    const changed = version !== this.snapshot?.version;
+    this.snapshot = changed ? { version, fetchedAt: now, checkedAt: now, content } : { ...this.snapshot, checkedAt: now };
+    this.held = null;
+    this.status.held = null;
+    return changed;
+  }
+
+  /** Владелец подтверждает удержанное меню (например, блюда действительно убрали из внешнего меню). */
+  async acceptHeld() {
+    if (!this.held) return false;
+    const { content, version } = this.held;
+    const now = new Date().toISOString();
+    this.#apply(content, version, now);
+    this.status.lastSuccessAt = now;
+    await this.#saveSnapshot(true);
+    console.log(`[sync] удержанное меню ${version} подтверждено`);
+    this.emit('snapshot', this.snapshot);
+    return true;
+  }
+
   async sync() {
     if (this.status.syncing) return this.snapshot;
     this.status.syncing = true;
@@ -68,13 +119,22 @@ export class IikoSync extends EventEmitter {
     try {
       const content = this.config.demo ? demoMenu : await this.#fetchFromIiko();
       const version = sha1(JSON.stringify(content)).slice(0, 12);
-      if (version !== this.snapshot?.version) {
-        this.snapshot = { version, fetchedAt: new Date().toISOString(), content };
-        if (!this.config.demo) await writeJsonAtomic(this.snapshotFile, this.snapshot);
-        console.log(`[sync] новый снимок iiko ${version}: ${content.categories.length} категорий`);
+      const count = countItems(content);
+      const prevCount = this.snapshot ? countItems(this.snapshot.content) : 0;
+      if (version !== this.snapshot?.version && prevCount >= SHRINK_MIN_ITEMS && count < prevCount * SHRINK_RATIO) {
+        const at = new Date().toISOString();
+        this.held = { version, content, count, prevCount, at };
+        this.status.held = { version, count, prevCount, at };
+        throw new Error(`iiko прислал меню с ${count} блюдами вместо ${prevCount} — не применено, планшеты показывают прежнее меню. Проверьте внешнее меню в iikoWeb или подтвердите изменение в админке.`);
+      }
+      const now = new Date().toISOString();
+      const changed = this.#apply(content, version, now);
+      await this.#saveSnapshot(changed);
+      if (changed) {
+        console.log(`[sync] новый снимок iiko ${version}: ${content.categories.length} категорий, ${count} блюд`);
         this.emit('snapshot', this.snapshot);
       }
-      this.status.lastSuccessAt = new Date().toISOString();
+      this.status.lastSuccessAt = now;
       this.status.lastError = null;
     } catch (err) {
       // Снимок остаётся прежним (из памяти или с диска) — планшеты продолжают работать.
@@ -94,14 +154,17 @@ export class IikoSync extends EventEmitter {
       this.targets ??= await resolveTargets(this.client, this.config.iiko);
       const raw = await this.client.stopLists([this.targets.org.id]);
       const next = parseStopList(raw, { terminalGroupId: this.config.iiko.terminalGroupId });
-      this.status.stopList = { checkedAt: new Date().toISOString(), count: next.length, error: null };
+      const now = new Date().toISOString();
+      this.status.stopList = { checkedAt: now, lastSuccessAt: now, count: next.length, groups: stopListGroups(raw), error: null };
       if (JSON.stringify(next) !== JSON.stringify(this.stopList)) {
         this.stopList = next;
         console.log(`[stoplist] закончилось позиций: ${next.length}`);
         this.emit('stoplist', next);
       }
     } catch (err) {
-      this.status.stopList = { checkedAt: new Date().toISOString(), count: this.stopList.length, error: err.message };
+      this.status.stopList = {
+        ...this.status.stopList, checkedAt: new Date().toISOString(), count: this.stopList.length, error: err.message,
+      };
       console.warn('[stoplist] ошибка:', err.message);
     }
     return this.stopList;
@@ -165,7 +228,10 @@ export class IikoSync extends EventEmitter {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
       if (!res.ok) throw new Error(String(res.status));
-      await writeFile(file, Buffer.from(await res.arrayBuffer()));
+      const type = res.headers.get('content-type') ?? '';
+      if (!type.startsWith('image/')) throw new Error(`не изображение (${type || 'без типа'})`);
+      // Атомарно: оборванная загрузка не должна остаться «скачанным» файлом.
+      await writeAtomic(file, Buffer.from(await res.arrayBuffer()));
       return `/media/${name}`;
     } catch (err) {
       console.warn(`[sync] фото не скачано (${err.message}): ${url}`);

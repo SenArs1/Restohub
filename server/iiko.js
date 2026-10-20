@@ -10,13 +10,14 @@ export class IikoError extends Error {
 }
 
 export class IikoClient {
-  constructor({ apiLogin, clientSecret, appId, apiUrl, timeoutMs = 30000 }) {
+  constructor({ apiLogin, clientSecret, appId, apiUrl, timeoutMs = 30000, retryDelayMs = 1000 }) {
     if (!apiLogin) throw new Error('IIKO_API_LOGIN не задан');
     this.apiLogin = apiLogin;
     this.clientSecret = clientSecret;
     this.appId = appId;
     this.apiUrl = apiUrl;
     this.timeoutMs = timeoutMs;
+    this.retryDelayMs = retryDelayMs;
     this.token = null;
     this.tokenExpiresAt = 0;
   }
@@ -27,7 +28,7 @@ export class IikoClient {
       return await this.#request(path, body, token);
     } catch (err) {
       if (err instanceof IikoError || attempt >= 3) throw err;
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
+      await new Promise((r) => setTimeout(r, this.retryDelayMs * attempt));
       return this.#post(path, body, token, attempt + 1);
     }
   }

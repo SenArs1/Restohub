@@ -39,6 +39,14 @@ try {
     if (!dishes.length) no('номенклатура пустая — внешнему меню не из чего брать блюда; проверьте, что iikoRMS выгружает её в облако');
   }
 
+  if (org) {
+    const tg = await client.call('/api/1/terminal_groups', { organizationIds: [org.id] });
+    const groups = (tg.terminalGroups ?? []).flatMap((g) => g.items ?? []);
+    console.log(`\n   Группы терминалов (для стоп-листа): ${groups.length}`);
+    for (const g of groups) console.log(`  • ${g.name}  id=${g.id}`);
+    if (groups.length > 1 && !cfg.terminalGroupId) no('групп несколько — укажите IIKO_TERMINAL_GROUP_ID, иначе стоп-листы всех групп объединяются');
+  }
+
   console.log('\n4) Категории цен');
   if (!priceCategories.length) console.log('  — нет (используются базовые цены)');
   for (const p of priceCategories) console.log(`  • ${p.name}  id=${p.id}`);

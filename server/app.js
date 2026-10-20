@@ -7,6 +7,7 @@ import { ROOT } from './config.js';
 import { BADGES, composeMenu, mediaUrls } from './compose.js';
 import { SESSION_COOKIE } from './auth.js';
 import { MAX_UPLOAD_BYTES, processImage } from './media.js';
+import { health } from './health.js';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -89,7 +90,12 @@ export function createApp({ config, sync, content, auth, publisher }) {
     for (const res of clients) res.write(msg);
   });
 
-  const statusInfo = () => ({ ...sync.status, version: publisher.menu?.version ?? null, tablets: clients.size });
+  const statusInfo = () => ({
+    ...sync.status,
+    version: publisher.menu?.version ?? null,
+    tablets: clients.size,
+    health: health(sync.status, config),
+  });
 
   function isTokenAdmin(req) {
     const given = Buffer.from(String(req.headers['x-admin-token'] ?? ''));
@@ -171,6 +177,10 @@ export function createApp({ config, sync, content, auth, publisher }) {
       await sync.refreshStopList();
       return { status: statusInfo() };
     }],
+    ['POST', /^\/api\/admin\/iiko\/accept-held$/, async () => {
+      if (!(await sync.acceptHeld())) throw new HttpError(409, 'Нет удержанного меню');
+      return { status: statusInfo() };
+    }, 'owner'],
   ];
 
   async function handleAdmin(req, res, p) {
@@ -186,10 +196,11 @@ export function createApp({ config, sync, content, auth, publisher }) {
     if (p === '/api/admin/me' && req.method === 'GET') {
       return json(res, 200, { user: sessionUser(req), setupRequired: !auth.hasUsers() });
     }
-    for (const [method, re, handler] of adminRoutes) {
+    for (const [method, re, handler, role] of adminRoutes) {
       const m = p.match(re);
       if (!m || method !== req.method) continue;
       const user = requireUser(req);
+      if (role === 'owner' && user.role !== 'owner') throw new HttpError(403, 'Доступно только владельцу');
       return json(res, 200, await handler(req, m.slice(1).map(decodeURIComponent), user));
     }
     throw new HttpError(404, 'not found');

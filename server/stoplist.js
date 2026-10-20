@@ -19,3 +19,16 @@ export function parseStopList(response, { terminalGroupId } = {}) {
   walk(response.terminalGroupStopLists ?? [], null);
   return [...keys].sort();
 }
+
+/** Группы терминалов, встретившиеся в ответе, — чтобы предупредить, если их несколько, а нужная не выбрана. */
+export function stopListGroups(response) {
+  const ids = new Set();
+  const walk = (node) => {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (!node || typeof node !== 'object') return;
+    if (node.terminalGroupId) ids.add(node.terminalGroupId);
+    for (const v of Object.values(node)) if (v && typeof v === 'object') walk(v);
+  };
+  walk(response.terminalGroupStopLists ?? []);
+  return [...ids].sort();
+}
