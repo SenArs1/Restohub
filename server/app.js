@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
+import { createServer as createHttpsServer } from 'node:https';
+import { createReadStream, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { ROOT } from './config.js';
 import { BADGES, composeMenu, mediaUrls } from './compose.js';
@@ -35,7 +36,43 @@ function json(res, status, body, headers = {}) {
   res.end(JSON.stringify(body));
 }
 
-async function sendFile(req, res, root, rel, cacheControl) {
+// ---------- Заголовки безопасности ----------
+
+const BASE_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+};
+
+/** CSP для HTML. В админке разрешён только встроенный importmap — по его хешу. */
+function contentSecurityPolicy(publicDir) {
+  let importmapHash = '';
+  try {
+    const html = readFileSync(path.join(publicDir, 'admin', 'index.html'), 'utf8');
+    const map = html.match(/<script type="importmap">([\s\S]*?)<\/script>/);
+    if (map) importmapHash = ` 'sha256-${createHash('sha256').update(map[1]).digest('base64')}'`;
+  } catch { /* без админки — без хеша */ }
+  const common = [
+    "default-src 'self'",
+    // Фото iiko, которые не удалось скачать на сервер, показываются по исходной ссылке.
+    "img-src 'self' data: https:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "connect-src 'self'",
+    "worker-src 'self'",
+    "frame-ancestors 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ];
+  return {
+    guest: [...common, "script-src 'self'"].join('; '),
+    admin: [...common, `script-src 'self'${importmapHash}`].join('; '),
+  };
+}
+
+async function sendFile(req, res, root, rel, cacheControl, extraHeaders = {}) {
   const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
   if (!file.startsWith(root + path.sep)) return json(res, 403, { error: 'forbidden' });
   try {
@@ -45,6 +82,7 @@ async function sendFile(req, res, root, rel, cacheControl) {
       'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
       'Content-Length': st.size,
       'Cache-Control': cacheControl,
+      ...extraHeaders,
     });
     if (req.method === 'HEAD') return res.end();
     createReadStream(file).pipe(res);
@@ -82,8 +120,13 @@ const cookies = (req) =>
       .map(([k, v]) => [k, decodeURIComponent(v)]),
   );
 
-export function createApp({ config, sync, content, auth, publisher }) {
+/**
+ * @param tls — { key, cert } для встроенного HTTPS; без него сервер работает по HTTP
+ *              (тогда HTTPS должен обеспечивать обратный прокси, см. README).
+ */
+export function createApp({ config, sync, content, auth, publisher, tls = null }) {
   const clients = new Set();
+  const csp = contentSecurityPolicy(config.publicDir);
 
   publisher.on('updated', (menu) => {
     const msg = `event: menu\ndata: ${JSON.stringify({ version: menu.version })}\n\n`;
@@ -103,18 +146,40 @@ export function createApp({ config, sync, content, auth, publisher }) {
     return config.adminToken && given.length === expected.length && timingSafeEqual(given, expected);
   }
 
+  // За обратным прокси (TRUST_PROXY=1) протокол и IP клиента берутся из X-Forwarded-*.
+  const isHttps = (req) => !!req.socket.encrypted || (config.trustProxy && String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https');
+  const clientIp = (req) => (config.trustProxy && String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim()) || req.socket.remoteAddress;
+
   const sessionUser = (req) => auth.userBySession(cookies(req)[SESSION_COOKIE]);
+
+  /**
+   * Защита изменяющих запросов от CSRF вдобавок к SameSite=Strict:
+   * заголовок X-Requested-With (его выставляет только наш JS), Origin совпадает с хостом,
+   * браузер не помечает запрос как межсайтовый.
+   */
+  function checkSameOrigin(req) {
+    if (req.method === 'GET' || req.method === 'HEAD') return;
+    if (req.headers['x-requested-with'] !== 'restohub') throw new HttpError(403, 'Запрос отклонён');
+    const site = req.headers['sec-fetch-site'];
+    if (site && site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Запрос с другого сайта отклонён');
+    const origin = req.headers.origin;
+    if (origin && origin !== 'null') {
+      let host;
+      try { host = new URL(origin).host; } catch { throw new HttpError(403, 'Запрос отклонён'); }
+      const expected = (config.trustProxy && req.headers['x-forwarded-host']) || req.headers.host;
+      if (host !== expected) throw new HttpError(403, 'Запрос с другого сайта отклонён');
+    }
+  }
 
   function requireUser(req) {
     const user = sessionUser(req);
     if (!user) throw new HttpError(401, 'Нужно войти');
-    // Защита от CSRF вдобавок к SameSite=Strict: изменения только из нашего JS.
-    if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'restohub') throw new HttpError(403, 'Запрос отклонён');
+    checkSameOrigin(req);
     return user;
   }
 
-  function sessionCookie(token, maxAge) {
-    const secure = config.cookieSecure ? '; Secure' : '';
+  function sessionCookie(req, token, maxAge) {
+    const secure = config.cookieSecure || isHttps(req) ? '; Secure' : '';
     return `${SESSION_COOKIE}=${token ?? ''}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
   }
 
@@ -148,7 +213,7 @@ export function createApp({ config, sync, content, auth, publisher }) {
       content.setOrder(kind, ids, user.login);
       return { ok: true };
     }],
-    ['PATCH', /^\/api\/admin\/settings$/, async (req) => ({ settings: content.patchSettings(await readJson(req)) })],
+    ['PATCH', /^\/api\/admin\/settings$/, async (req) => ({ settings: content.patchSettings(await readJson(req)) }), 'owner'],
     ['POST', /^\/api\/admin\/media$/, async (req, p, user) => {
       if (!String(req.headers['content-type'] ?? '').startsWith('image/')) throw new HttpError(415, 'Загрузите изображение');
       const buf = await readBody(req, MAX_UPLOAD_BYTES);
@@ -171,7 +236,7 @@ export function createApp({ config, sync, content, auth, publisher }) {
       const pub = content.restore(Number(id), user.login);
       afterPublish();
       return { publication: pub, version: publisher.menu?.version };
-    }],
+    }, 'owner'],
     ['POST', /^\/api\/admin\/sync$/, async () => {
       await sync.sync();
       await sync.refreshStopList();
@@ -181,34 +246,67 @@ export function createApp({ config, sync, content, auth, publisher }) {
       if (!(await sync.acceptHeld())) throw new HttpError(409, 'Нет удержанного меню');
       return { status: statusInfo() };
     }, 'owner'],
+    // Свой пароль может сменить любой пользователь; после смены нужно войти заново.
+    ['POST', /^\/api\/admin\/me\/password$/, async (req, p, user) => {
+      const { current, next } = await readJson(req);
+      await auth.changePassword(user.login, current, next);
+      return { ok: true };
+    }],
+    // Пользователи — только владелец.
+    ['GET', /^\/api\/admin\/users$/, () => ({ users: auth.listUsers() }), 'owner'],
+    ['POST', /^\/api\/admin\/users$/, async (req) => {
+      const { login, role } = await readJson(req);
+      return { login: String(login ?? '').toLowerCase(), password: await auth.createUser(String(login ?? ''), role ?? 'manager') };
+    }, 'owner'],
+    ['POST', /^\/api\/admin\/users\/([^/]+)\/password$/, async (req, [login]) => ({ password: await auth.resetPassword(login) }), 'owner'],
+    ['PATCH', /^\/api\/admin\/users\/([^/]+)$/, async (req, [login], user) => {
+      const { role } = await readJson(req);
+      if (login.toLowerCase() === user.login && role !== user.role) throw new HttpError(400, 'Свою роль менять нельзя');
+      auth.setRole(login, role);
+      return { users: auth.listUsers() };
+    }, 'owner'],
+    ['DELETE', /^\/api\/admin\/users\/([^/]+)$/, (req, [login], user) => {
+      if (login.toLowerCase() === user.login) throw new HttpError(400, 'Себя удалить нельзя');
+      auth.deleteUser(login);
+      return { users: auth.listUsers() };
+    }, 'owner'],
   ];
+
+  /** Маршруты и требуемые роли — для проверки прав в тестах и документации. */
+  const routeTable = adminRoutes.map(([method, re, , role]) => ({ method, pattern: re.source, role: role ?? 'manager' }));
+
+  const NO_STORE = { 'Cache-Control': 'no-store' };
 
   async function handleAdmin(req, res, p) {
     if (p === '/api/admin/login' && req.method === 'POST') {
+      checkSameOrigin(req);
       const { login, password } = await readJson(req);
-      const { token, user, maxAge } = await auth.login(login, password, req.socket.remoteAddress);
-      return json(res, 200, { user }, { 'Set-Cookie': sessionCookie(token, maxAge) });
+      const { token, user, maxAge } = await auth.login(login, password, clientIp(req));
+      return json(res, 200, { user }, { ...NO_STORE, 'Set-Cookie': sessionCookie(req, token, maxAge) });
     }
     if (p === '/api/admin/logout' && req.method === 'POST') {
+      checkSameOrigin(req);
       auth.logout(cookies(req)[SESSION_COOKIE]);
-      return json(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(null, 0) });
+      return json(res, 200, { ok: true }, { ...NO_STORE, 'Set-Cookie': sessionCookie(req, null, 0) });
     }
     if (p === '/api/admin/me' && req.method === 'GET') {
-      return json(res, 200, { user: sessionUser(req), setupRequired: !auth.hasUsers() });
+      return json(res, 200, { user: sessionUser(req), setupRequired: !auth.hasUsers(), https: isHttps(req) }, NO_STORE);
     }
     for (const [method, re, handler, role] of adminRoutes) {
       const m = p.match(re);
       if (!m || method !== req.method) continue;
       const user = requireUser(req);
       if (role === 'owner' && user.role !== 'owner') throw new HttpError(403, 'Доступно только владельцу');
-      return json(res, 200, await handler(req, m.slice(1).map(decodeURIComponent), user));
+      return json(res, 200, await handler(req, m.slice(1).map(decodeURIComponent), user), NO_STORE);
     }
     throw new HttpError(404, 'not found');
   }
 
-  return createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
+    for (const [k, v] of Object.entries(BASE_HEADERS)) res.setHeader(k, v);
+    if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
     try {
       if (p.startsWith('/api/admin/')) return await handleAdmin(req, res, p);
 
@@ -255,15 +353,22 @@ export function createApp({ config, sync, content, auth, publisher }) {
         const file = VENDOR[p.slice('/admin/vendor/'.length)];
         return file ? sendFile(req, res, ROOT, file, 'public, max-age=86400') : json(res, 404, { error: 'not found' });
       }
-      if (p === '/admin' || p === '/admin/') return sendFile(req, res, config.publicDir, 'admin/index.html', 'no-cache');
+      if (p === '/admin' || p === '/admin/') {
+        return sendFile(req, res, config.publicDir, 'admin/index.html', 'no-store', { 'Content-Security-Policy': csp.admin, 'X-Robots-Tag': 'noindex' });
+      }
 
       const rel = p === '/' ? 'index.html' : decodeURIComponent(p.slice(1));
-      return sendFile(req, res, config.publicDir, rel, 'no-cache');
+      const htmlCsp = rel.endsWith('.html') ? { 'Content-Security-Policy': rel.startsWith('admin/') ? csp.admin : csp.guest } : {};
+      return sendFile(req, res, config.publicDir, rel, 'no-cache', htmlCsp);
     } catch (err) {
       const status = err.status ?? 500;
       if (status >= 500) console.error('[http]', req.method, p, err);
       if (!res.headersSent) json(res, status, { error: status >= 500 ? 'Внутренняя ошибка сервера' : err.message });
       else res.end();
     }
-  });
+  };
+
+  const server = tls ? createHttpsServer(tls, handler) : createServer(handler);
+  server.routeTable = routeTable;
+  return server;
 }

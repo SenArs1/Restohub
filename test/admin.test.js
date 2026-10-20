@@ -1,57 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { openDb } from '../server/db.js';
-import { Auth } from '../server/auth.js';
-import { ContentStore } from '../server/content.js';
-import { IikoSync } from '../server/sync.js';
-import { Publisher } from '../server/publisher.js';
-import { createApp } from '../server/app.js';
-import { startFakeIiko, testConfig } from './fake-iiko.js';
-
-async function startRestohub(t) {
-  const iiko = await startFakeIiko(t);
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'restohub-'));
-  const config = testConfig(dataDir, iiko.url);
-  const db = openDb(':memory:');
-  const auth = new Auth(db);
-  await auth.upsertUser('anna', 'correct-horse-battery', 'manager');
-  const content = new ContentStore(db);
-  const sync = new IikoSync(config);
-  const publisher = new Publisher({ config, sync, content });
-  const server = createApp({ config, sync, content, auth, publisher });
-  await sync.init();
-  sync.stop();
-  publisher.rebuild();
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => {
-    server.closeAllConnections();
-    server.close();
-    await rm(dataDir, { recursive: true, force: true });
-  });
-  const base = `http://127.0.0.1:${server.address().port}`;
-  let cookie = '';
-  const api = async (method, p, body, headers = {}) => {
-    const isJson = body !== undefined && !(body instanceof Uint8Array);
-    const res = await fetch(base + p, {
-      method,
-      headers: {
-        ...(cookie ? { Cookie: cookie } : {}),
-        ...(method !== 'GET' ? { 'X-Requested-With': 'restohub' } : {}),
-        ...(isJson ? { 'Content-Type': 'application/json' } : {}),
-        ...headers,
-      },
-      body: isJson ? JSON.stringify(body) : body,
-    });
-    const setCookie = res.headers.get('set-cookie');
-    if (setCookie) cookie = setCookie.split(';')[0];
-    return { status: res.status, body: await res.json().catch(() => null), headers: res.headers };
-  };
-  return { iiko, sync, api, dataDir, logout: () => { cookie = ''; } };
-}
+import { startRestohub } from './restohub-stand.js';
 
 const menuItem = async (api, preview = false) => (await api('GET', `/api/menu${preview ? '?preview=1' : ''}`)).body.categories[0].items[0];
 
@@ -63,11 +15,11 @@ test('админка: вход, правка, фото, предпросмотр
   assert.equal((await api('GET', '/api/menu?preview=1')).status, 401);
   assert.equal((await api('POST', '/api/admin/login', { login: 'anna', password: 'wrong-password' })).status, 401);
 
-  const login = await api('POST', '/api/admin/login', { login: 'Anna', password: 'correct-horse-battery' });
+  const login = await api('POST', '/api/admin/login', { login: 'Olga', password: 'owner-password-123' });
   assert.equal(login.status, 200);
   assert.match(login.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
   const state = (await api('GET', '/api/admin/state')).body;
-  assert.equal(state.user.login, 'anna');
+  assert.equal(state.user.login, 'olga');
   assert.equal(state.iiko[0].items[0].id, 'p-1');
 
   // Изменения без заголовка X-Requested-With отклоняются (CSRF).

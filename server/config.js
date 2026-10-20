@@ -33,6 +33,12 @@ export const config = {
   // Через сколько минут без успешной синхронизации данные считаются устаревшими (предупреждение в админке).
   staleAfterMin: num('STALE_AFTER_MIN', 0),
   cookieSecure: flag('COOKIE_SECURE', false),
+  // Сервер за обратным прокси (Caddy, nginx): доверять X-Forwarded-Proto/-For/-Host.
+  trustProxy: flag('TRUST_PROXY', false),
+  sessionIdleHours: num('SESSION_IDLE_HOURS', 24),
+  // Встроенный HTTPS: пути к сертификату и ключу (PEM). Пусто — HTTP.
+  tlsCertFile: env('TLS_CERT_FILE'),
+  tlsKeyFile: env('TLS_KEY_FILE'),
   cacheImages: flag('CACHE_IMAGES', true),
   adminToken: env('ADMIN_TOKEN'),
   idleSeconds: num('IDLE_SECONDS', 90),
