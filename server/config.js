@@ -23,7 +23,7 @@ const num = (k, d) => Number(env(k, String(d))) || d;
 export const config = {
   port: num('PORT', 8080),
   host: env('HOST', '0.0.0.0'),
-  dataDir: path.join(ROOT, 'data'),
+  dataDir: env('DATA_DIR') ? path.resolve(ROOT, env('DATA_DIR')) : path.join(ROOT, 'data'),
   publicDir: path.join(ROOT, 'public'),
 
   restaurantName: env('RESTAURANT_NAME', 'Madi Cake'),

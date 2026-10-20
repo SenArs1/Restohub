@@ -68,6 +68,8 @@ img { -webkit-user-drag: none; }
   display: flex; gap: 10px; align-items: center;
 }
 .status[hidden] { display: none; }
+.status.preview { background: #e9e3f6; color: #5a4793; }
+.status.preview::before { background: #7a66b8; }
 .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #d99a4e; flex: none; }
 
 /* ---------- Контент ---------- */
@@ -102,6 +104,25 @@ img { -webkit-user-drag: none; }
   font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   padding: 5px 10px; border-radius: 999px;
 }
+
+/* Закончилось (стоп-лист iiko) */
+.card.sold-out .media, .card.sold-out .placeholder { filter: grayscale(.8); opacity: .55; }
+.card.sold-out .card-name, .card.sold-out .price { opacity: .55; }
+.soldout {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  background: rgba(74, 47, 41, .88); color: var(--paper); padding: 7px 16px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+}
+.soldout-note { margin: -6px 0 0; color: var(--rose-deep); font-weight: 600; }
+.size.sold-out b, .size.sold-out > div { opacity: .5; }
+
+/* Галерея в карточке блюда */
+.gallery { position: absolute; inset: 0; display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.gallery::-webkit-scrollbar { display: none; }
+.slide { position: relative; flex: 0 0 100%; scroll-snap-align: start; }
+.dots { position: absolute; left: 0; right: 0; bottom: 14px; display: flex; justify-content: center; gap: 7px; pointer-events: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 250, 246, .55); box-shadow: 0 0 0 1px rgba(74,47,41,.15); }
+.dot[aria-current="true"] { background: var(--paper); }
 
 /* Фото и заглушка */
 .media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--blush); }

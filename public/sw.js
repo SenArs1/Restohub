@@ -1,5 +1,5 @@
 // Service worker: офлайн-оболочка приложения, кеш фото и шрифтов.
-const SHELL = 'restohub-shell-v1';
+const SHELL = 'restohub-shell-v2';
 const MEDIA = 'restohub-media-v1';
 const SHELL_FILES = ['/', '/index.html', '/styles.css', '/app.js', '/icon.svg', '/manifest.webmanifest'];
 
@@ -41,7 +41,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
 
   // Меню, статус и SSE всегда из сети — офлайн-копию меню хранит само приложение.
-  if (url.origin === location.origin && url.pathname.startsWith('/api/')) return;
+  // Админка тоже только из сети: устаревшая копия админки опаснее, чем её отсутствие офлайн.
+  if (url.origin === location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin'))) return;
 
   if (req.destination === 'image' || url.pathname.startsWith('/media/') ||
       url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
