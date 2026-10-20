@@ -10,13 +10,14 @@ export class IikoError extends Error {
 }
 
 export class IikoClient {
-  constructor({ apiLogin, apiUrl, timeoutMs = 30000 }) {
+  constructor({ apiLogin, clientSecret, apiUrl, timeoutMs = 30000 }) {
     if (!apiLogin) throw new Error('IIKO_API_LOGIN не задан');
     this.apiLogin = apiLogin;
+    this.clientSecret = clientSecret;
     this.apiUrl = apiUrl;
     this.timeoutMs = timeoutMs;
     this.token = null;
-    this.tokenAt = 0;
+    this.tokenExpiresAt = 0;
   }
 
   async #post(path, body, token) {
@@ -39,11 +40,27 @@ export class IikoClient {
     return data;
   }
 
+  // Ключи старого формата (apiLogin) получают токен через /api/1/access_token,
+  // ключи нового формата — через /api/v2/access_token с парой apiKey + clientSecret.
   async getToken(force = false) {
-    if (!force && this.token && Date.now() - this.tokenAt < TOKEN_TTL_MS) return this.token;
-    const data = await this.#post('/api/1/access_token', { apiLogin: this.apiLogin });
-    this.token = data.token;
-    this.tokenAt = Date.now();
+    if (!force && this.token && Date.now() < this.tokenExpiresAt) return this.token;
+    let data;
+    if (this.clientSecret) {
+      data = await this.#post('/api/v2/access_token', { apiKey: this.apiLogin, clientSecret: this.clientSecret });
+    } else {
+      try {
+        data = await this.#post('/api/1/access_token', { apiLogin: this.apiLogin });
+      } catch (err) {
+        if (/api\/v2\/access_token/.test(err.message)) {
+          err.message = 'Ключ нового формата: нужен IIKO_CLIENT_SECRET (выдаётся вместе с API-ключом) — ' + err.message;
+        }
+        throw err;
+      }
+    }
+    this.token = data.token ?? data.accessToken ?? data.access_token;
+    if (!this.token) throw new IikoError('iiko: в ответе access_token нет токена', { body: data });
+    const ttl = Number(data.expiresIn ?? data.expires_in) * 1000;
+    this.tokenExpiresAt = Date.now() + (ttl > 0 ? Math.min(ttl - 5 * 60 * 1000, TOKEN_TTL_MS) : TOKEN_TTL_MS);
     return this.token;
   }
 

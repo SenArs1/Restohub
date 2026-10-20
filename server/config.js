@@ -36,6 +36,7 @@ export const config = {
 
   iiko: {
     apiLogin: env('IIKO_API_LOGIN'),
+    clientSecret: env('IIKO_CLIENT_SECRET'),
     apiUrl: env('IIKO_API_URL', 'https://api-ru.iiko.services').replace(/\/+$/, ''),
     organizationId: env('IIKO_ORGANIZATION_ID'),
     organizationName: env('IIKO_ORGANIZATION_NAME', 'Madi Cake'),
