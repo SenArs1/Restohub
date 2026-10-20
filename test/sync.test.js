@@ -1,83 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { MenuStore } from '../server/sync.js';
-import { externalMenu, ORG } from './fixtures.js';
+import { IikoSync } from '../server/sync.js';
+import { startFakeIiko, testConfig } from './fake-iiko.js';
 
-test('MenuStore: синхронизация, новая версия при смене цены, кеш при недоступности iiko', async (t) => {
-  let price = 420;
-  let nomPrice = 420;
-  let down = false;
-  const calls = [];
-  const fake = createServer(async (req, res) => {
-    let body = '';
-    for await (const chunk of req) body += chunk;
-    calls.push(req.url);
-    if (down) { res.writeHead(503); return res.end('{}'); }
-    const send = (o) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
-    if (req.url === '/img/cake.jpg') { res.writeHead(200); return res.end('JPEG'); }
-    if (req.url === '/api/1/access_token') return send({ token: 'tkn' });
-    assert.equal(req.headers.authorization, 'Bearer tkn');
-    if (req.url === '/api/1/organizations') return send({ organizations: [{ id: ORG, name: 'Madi Cake' }] });
-    if (req.url === '/api/2/menu') return send({ externalMenus: [{ id: 'menu-1', name: 'Madi Cake' }], priceCategories: [] });
-    if (req.url === '/api/1/nomenclature') {
-      return send({ products: [{ id: 'p-1', name: 'Медовик', sizePrices: [{ sizeId: null, price: { currentPrice: nomPrice } }] }] });
-    }
-    if (req.url === '/api/2/menu/by_id') {
-      assert.equal(JSON.parse(body).externalMenuId, 'menu-1');
-      const m = externalMenu(price);
-      m.itemCategories[0].items[0].itemSizes[0].buttonImageUrl = `http://127.0.0.1:${fake.address().port}/img/cake.jpg`;
-      return send(m);
-    }
-    res.writeHead(404); res.end('{}');
-  });
-  await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+test('IikoSync: снимок, сверка цен, стоп-лист, кеш при недоступности iiko', async (t) => {
+  const iiko = await startFakeIiko(t);
   const dataDir = await mkdtemp(path.join(tmpdir(), 'restohub-'));
-  t.after(async () => { fake.close(); await rm(dataDir, { recursive: true, force: true }); });
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const cfg = testConfig(dataDir, iiko.url);
 
-  const cfg = {
-    demo: false, dataDir, cacheImages: true, restaurantName: 'Madi Cake', currency: '₽', idleSeconds: 90, syncIntervalMin: 60,
-    iiko: { apiLogin: 'key', apiUrl: `http://127.0.0.1:${fake.address().port}`, organizationName: 'Madi Cake', externalMenuName: 'Madi Cake' },
-  };
-  const store = new MenuStore(cfg);
-  await store.init();
-  clearInterval(store.timer);
+  const sync = new IikoSync(cfg);
+  await sync.init();
+  sync.stop();
 
-  const v1 = store.menu.version;
-  const item = store.menu.categories[0].items[0];
+  const v1 = sync.snapshot.version;
+  const item = sync.snapshot.content.categories[0].items[0];
   assert.equal(item.price, 420);
-  assert.match(item.image, /^\/media\/[0-9a-f]+\.jpg$/, 'фото скачано локально');
+  assert.match(item.image, /^\/media\/[0-9a-f]+\.jpg$/, 'фото iiko скачано локально');
   assert.equal(await readFile(path.join(dataDir, 'media', path.basename(item.image)), 'utf8'), 'JPEG');
+  assert.deepEqual(sync.status.priceCheck.mismatches, [], 'цены совпадают');
+  assert.deepEqual(sync.stopList, []);
 
-  assert.deepEqual(store.status.priceCheck.mismatches, [], 'цены совпадают');
+  iiko.state.nomPrice = 450; // цену поменяли в iiko, внешнее меню не обновили
+  await sync.sync();
+  assert.deepEqual(sync.status.priceCheck.mismatches.map((m) => [m.name, m.iikoPrice, m.menuPrice]), [['Медовик', 450, 420]]);
 
-  nomPrice = 450; // цену поменяли в iiko, внешнее меню не обновили
-  await store.sync();
-  assert.deepEqual(store.status.priceCheck.mismatches.map((m) => [m.name, m.iikoPrice, m.menuPrice]), [['Медовик', 450, 420]]);
+  let snapshots = 0;
+  let stops = 0;
+  sync.on('snapshot', () => snapshots++);
+  sync.on('stoplist', () => stops++);
+  await sync.sync();
+  assert.equal(snapshots, 0, 'без изменений снимок тот же');
 
-  let updated = 0;
-  store.on('updated', () => updated++);
-  await store.sync();
-  assert.equal(updated, 0, 'без изменений версия та же');
+  iiko.state.price = 450;
+  await sync.sync();
+  assert.equal(snapshots, 1);
+  assert.notEqual(sync.snapshot.version, v1);
+  assert.deepEqual(sync.status.priceCheck.mismatches, [], 'после обновления внешнего меню расхождений нет');
 
-  price = 450;
-  await store.sync();
-  assert.equal(updated, 1);
-  assert.notEqual(store.menu.version, v1);
-  assert.equal(store.menu.categories[0].items[0].price, 450);
-  assert.deepEqual(store.status.priceCheck.mismatches, [], 'после обновления внешнего меню расхождений нет');
+  iiko.state.stop = ['p-1'];
+  await sync.refreshStopList();
+  await sync.refreshStopList();
+  assert.deepEqual(sync.stopList, ['p-1:']);
+  assert.equal(stops, 1, 'событие только при изменении');
 
-  down = true;
-  await store.sync();
-  assert.ok(store.status.lastError);
-  assert.equal(store.menu.categories[0].items[0].price, 450, 'при сбое отдаём последнее меню');
+  iiko.state.down = true;
+  await sync.sync();
+  await sync.refreshStopList();
+  assert.ok(sync.status.lastError);
+  assert.ok(sync.status.stopList.error);
+  assert.equal(sync.snapshot.content.categories[0].items[0].price, 450, 'при сбое остаётся последний снимок');
+  assert.deepEqual(sync.stopList, ['p-1:'], 'и последний стоп-лист');
 
-  const reloaded = new MenuStore(cfg);
-  reloaded.sync = async () => reloaded.menu; // без сети: только диск
+  const reloaded = new IikoSync(cfg);
   await reloaded.init();
-  clearInterval(reloaded.timer);
-  assert.equal(reloaded.menu.version, store.menu.version, 'меню восстановлено с диска после перезапуска');
+  reloaded.stop();
+  assert.equal(reloaded.snapshot.version, sync.snapshot.version, 'снимок восстановлен с диска после перезапуска');
 });

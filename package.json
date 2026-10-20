@@ -1,15 +1,23 @@
 {
   "name": "restohub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Restohub — электронное меню для планшетов с интеграцией iikoCloud (объект: Madi Cake)",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server/index.js",
     "demo": "DEMO=1 node server/index.js",
     "iiko:check": "node scripts/iiko-check.js",
     "iiko:prices": "node scripts/price-check.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "admin:user": "node scripts/admin-user.js"
+  },
+  "dependencies": {
+    "htm": "^3.1.1",
+    "preact": "^10.29.8",
+    "sharp": "^0.34.5"
   }
 }

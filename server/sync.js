@@ -7,6 +7,7 @@ import { IikoClient, resolveTargets } from './iiko.js';
 import { normalizeExternalMenu } from './normalize.js';
 import { findPriceMismatches } from './prices.js';
 import { demoMenu } from './demo-menu.js';
+import { parseStopList } from './stoplist.js';
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 
@@ -17,71 +18,93 @@ async function writeJsonAtomic(file, data) {
 }
 
 /**
- * Хранит актуальное меню: забирает его из iiko по расписанию, кладёт на диск
- * (переживает перезапуск и обрыв интернета) и сообщает подписчикам о новой версии.
+ * Снимок данных iiko: внешнее меню (по расписанию) и стоп-лист (раз в минуту).
+ * Снимок хранится на диске — переживает перезапуск и обрыв интернета.
+ * События: 'snapshot' — изменилось меню iiko, 'stoplist' — изменился стоп-лист.
  */
-export class MenuStore extends EventEmitter {
+export class IikoSync extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    this.menuFile = path.join(config.dataDir, 'menu.json');
+    this.snapshotFile = path.join(config.dataDir, 'iiko-snapshot.json');
     this.mediaDir = path.join(config.dataDir, 'media');
-    this.menu = null;
+    this.snapshot = null; // { version, fetchedAt, content }
+    this.stopList = [];
     this.status = {
       source: config.demo ? 'demo' : 'iiko', lastSyncAt: null, lastSuccessAt: null, lastError: null, syncing: false,
       priceCheck: null,
+      stopList: null,
     };
     this.client = config.demo ? null : new IikoClient(config.iiko);
     this.targets = null;
+    this.timers = [];
   }
 
   async init() {
     await mkdir(this.mediaDir, { recursive: true });
-    if (!this.config.demo && existsSync(this.menuFile)) {
+    if (!this.config.demo && existsSync(this.snapshotFile)) {
       try {
-        this.menu = JSON.parse(await readFile(this.menuFile, 'utf8'));
-        this.status.lastSuccessAt = this.menu.updatedAt;
+        this.snapshot = JSON.parse(await readFile(this.snapshotFile, 'utf8'));
+        this.status.lastSuccessAt = this.snapshot.fetchedAt;
       } catch (err) {
-        console.warn('[sync] не удалось прочитать кеш меню:', err.message);
+        console.warn('[sync] не удалось прочитать снимок iiko:', err.message);
       }
     }
     await this.sync();
-    const ms = this.config.syncIntervalMin * 60 * 1000;
-    this.timer = setInterval(() => this.sync(), ms);
-    this.timer.unref();
+    await this.refreshStopList();
+    this.timers.push(setInterval(() => this.sync(), this.config.syncIntervalMin * 60 * 1000));
+    if (!this.config.demo) this.timers.push(setInterval(() => this.refreshStopList(), this.config.stopListIntervalSec * 1000));
+    for (const t of this.timers) t.unref();
+  }
+
+  stop() {
+    for (const t of this.timers) clearInterval(t);
   }
 
   async sync() {
-    if (this.status.syncing) return this.menu;
+    if (this.status.syncing) return this.snapshot;
     this.status.syncing = true;
     this.status.lastSyncAt = new Date().toISOString();
     try {
       const content = this.config.demo ? demoMenu : await this.#fetchFromIiko();
       const version = sha1(JSON.stringify(content)).slice(0, 12);
-      if (version !== this.menu?.version) {
-        this.menu = {
-          version,
-          updatedAt: new Date().toISOString(),
-          source: this.status.source,
-          restaurant: { name: this.config.restaurantName, currency: this.config.currency },
-          settings: { idleSeconds: this.config.idleSeconds },
-          ...content,
-        };
-        if (!this.config.demo) await writeJsonAtomic(this.menuFile, this.menu);
-        console.log(`[sync] новая версия меню ${version}: ${content.categories.length} категорий`);
-        this.emit('updated', this.menu);
+      if (version !== this.snapshot?.version) {
+        this.snapshot = { version, fetchedAt: new Date().toISOString(), content };
+        if (!this.config.demo) await writeJsonAtomic(this.snapshotFile, this.snapshot);
+        console.log(`[sync] новый снимок iiko ${version}: ${content.categories.length} категорий`);
+        this.emit('snapshot', this.snapshot);
       }
       this.status.lastSuccessAt = new Date().toISOString();
       this.status.lastError = null;
     } catch (err) {
-      // Меню остаётся прежним (из памяти или с диска) — планшеты продолжают работать.
+      // Снимок остаётся прежним (из памяти или с диска) — планшеты продолжают работать.
       this.status.lastError = err.message;
       console.error('[sync] ошибка:', err.message);
       if (/не найден/.test(err.message)) this.targets = null;
     } finally {
       this.status.syncing = false;
     }
-    return this.menu;
+    return this.snapshot;
+  }
+
+  /** Стоп-лист. При ошибке оставляем прежний: лучше показать «есть», чем скрыть всё меню. */
+  async refreshStopList() {
+    if (this.config.demo) return this.stopList;
+    try {
+      this.targets ??= await resolveTargets(this.client, this.config.iiko);
+      const raw = await this.client.stopLists([this.targets.org.id]);
+      const next = parseStopList(raw, { terminalGroupId: this.config.iiko.terminalGroupId });
+      this.status.stopList = { checkedAt: new Date().toISOString(), count: next.length, error: null };
+      if (JSON.stringify(next) !== JSON.stringify(this.stopList)) {
+        this.stopList = next;
+        console.log(`[stoplist] закончилось позиций: ${next.length}`);
+        this.emit('stoplist', next);
+      }
+    } catch (err) {
+      this.status.stopList = { checkedAt: new Date().toISOString(), count: this.stopList.length, error: err.message };
+      console.warn('[stoplist] ошибка:', err.message);
+    }
+    return this.stopList;
   }
 
   async #fetchFromIiko() {

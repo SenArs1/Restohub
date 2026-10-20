@@ -46,6 +46,7 @@ export function normalizeExternalMenu(raw, { organizationId }) {
       const sizes = (item.itemSizes ?? [])
         .filter((s) => !s.isHidden)
         .map((s) => ({
+          sizeId: s.sizeId ?? null,
           name: s.sizeName || '',
           isDefault: !!s.isDefault,
           price: pickPrice(s.prices, organizationId),
@@ -61,6 +62,7 @@ export function normalizeExternalMenu(raw, { organizationId }) {
       items.push({
         id: item.itemId ?? item.id,
         sku: item.sku ?? null,
+        sizeId: main.sizeId,
         name: item.name,
         description: (item.description || '').trim(),
         image: main.image ?? sizes.find((s) => s.image)?.image ?? firstUrl(item.buttonImageUrl),
@@ -68,7 +70,7 @@ export function normalizeExternalMenu(raw, { organizationId }) {
         weight: main.weight,
         unit: /LIT|MILLI/i.test(main.unitType ?? '') || /мл|ml|л$/i.test(item.measureUnit ?? '') ? 'мл' : 'г',
         nutrition: main.nutrition,
-        sizes: sizes.length > 1 ? sizes.map(({ name, price, weight }) => ({ name, price, weight })) : [],
+        sizes: sizes.length > 1 ? sizes.map(({ sizeId, name, price, weight }) => ({ sizeId, name, price, weight })) : [],
         allergens: names(item.allergens ?? item.allergenGroups),
         tags: names(item.tags).concat(names(item.labels)),
       });

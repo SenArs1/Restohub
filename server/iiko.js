@@ -108,6 +108,10 @@ export class IikoClient {
     });
   }
 
+  stopLists(organizationIds) {
+    return this.call('/api/1/stop_lists', { organizationIds });
+  }
+
   nomenclature(organizationId) {
     return this.call('/api/1/nomenclature', { organizationId, startRevision: 0 });
   }
