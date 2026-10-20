@@ -1,0 +1,1 @@
+Studio 55 restaurant menu v2.1 test preview. Assets are stored as .webp.b64 and decoded during Render build. The published site contains no external dependencies.
