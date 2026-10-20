@@ -3,8 +3,27 @@ const CACHE_KEY = 'restohub.menu.v1';
 const POLL_MS = 5 * 60 * 1000;
 // Предпросмотр черновика из админки: другое меню, без кеша и без подписки на обновления.
 const PREVIEW = new URLSearchParams(location.search).has('preview');
-const CARD_SIZES = '(max-width: 520px) 50vw, (max-width: 900px) 33vw, 320px';
-const SHEET_SIZES = '(max-width: 900px) 100vw, 560px';
+const DIAG = new URLSearchParams(location.search).has('diag');
+// Не больше стольких фото предзагружается для офлайна (сначала карточки, потом крупные фото).
+const MAX_PRECACHE = 400;
+
+// Размер фото выбирается детерминированно по устройству, а не браузером через srcset:
+// только так заранее известно, какие файлы предзагрузить для работы без сети.
+const DPR = Math.min(Math.max(devicePixelRatio || 1, 1), 2);
+const CARD_CSS_WIDTH = 360;
+const SHEET_CSS_WIDTH = 800;
+const WEBP = (() => {
+  try { return document.createElement('canvas').toDataURL('image/webp').startsWith('data:image/webp'); } catch { return false; }
+})();
+
+const widthsOf = (img) => img.widths ?? img.srcset.split(', ').map((s) => Number(s.split(' ')[1].replace('w', ''))).sort((a, b) => a - b);
+/** URL копии фото, подходящей для ширины cssWidth на этом экране. */
+function variant(img, cssWidth) {
+  const need = cssWidth * DPR;
+  const widths = widthsOf(img);
+  const w = widths.find((x) => x >= need) ?? widths.at(-1);
+  return `/media/${img.id}-${w}.${WEBP ? 'webp' : 'jpg'}`;
+}
 
 const $ = (sel) => document.querySelector(sel);
 const els = {
@@ -24,23 +43,21 @@ const price = (v) => `${num.format(v)} ${esc(menu.restaurant?.currency ?? '₽')
 const amount = (v, unit) => (v ? `${num.format(v)} ${unit}` : '');
 const initial = (name) => esc((name || '?').trim().charAt(0).toUpperCase());
 
-/** Фото из админки — <picture> с WebP и srcset; фото из iiko — обычный <img>. Под ним заглушка на случай ошибки. */
-function picture(img, sizes, eager) {
-  const loading = eager ? '' : 'loading="lazy"';
-  return `<picture><source type="image/webp" srcset="${esc(img.webp)}" sizes="${sizes}">`
-    + `<img class="media" src="${esc(img.src)}" srcset="${esc(img.srcset)}" sizes="${sizes}" alt="" ${loading} decoding="async"></picture>`;
+/** Фото из админки — копия нужного размера; фото из iiko — как есть. Под ним заглушка на случай ошибки. */
+function picture(img, cssWidth, eager) {
+  return `<img class="media" src="${esc(variant(img, cssWidth))}" alt="" ${eager ? '' : 'loading="lazy"'} decoding="async">`;
 }
 
-function media(item, { eager = false, sizes = CARD_SIZES } = {}) {
+function media(item, { eager = false, cssWidth = CARD_CSS_WIDTH } = {}) {
   const ph = `<div class="placeholder"><span>${initial(item.name)}</span></div>`;
-  if (item.images?.length) return ph + picture(item.images[0], sizes, eager);
+  if (item.images?.length) return ph + picture(item.images[0], cssWidth, eager);
   if (!item.image) return ph;
   return `${ph}<img class="media" src="${esc(item.image)}" alt="" ${eager ? '' : 'loading="lazy"'} decoding="async">`;
 }
 
 function gallery(item) {
-  if ((item.images?.length ?? 0) < 2) return media(item, { eager: true, sizes: SHEET_SIZES });
-  const slides = item.images.map((img, i) => `<div class="slide">${picture(img, SHEET_SIZES, i === 0)}</div>`).join('');
+  if ((item.images?.length ?? 0) < 2) return media(item, { eager: true, cssWidth: SHEET_CSS_WIDTH });
+  const slides = item.images.map((img, i) => `<div class="slide">${picture(img, SHEET_CSS_WIDTH, i === 0)}</div>`).join('');
   const dots = item.images.map((_, i) => `<span class="dot" data-dot="${i}" aria-current="${i === 0}"></span>`).join('');
   return `<div class="placeholder"><span>${initial(item.name)}</span></div><div class="gallery">${slides}</div><div class="dots">${dots}</div>`;
 }
@@ -63,16 +80,65 @@ async function load() {
     if (data.version !== menu?.version) {
       storage('set', data);
       apply(data);
+      precache(data);
     } else renderStatus();
   } catch {
     offline = true;
     if (!menu) {
-      const cached = storage('get');
+      const cached = storage('get') ?? (await cachedMenu());
       if (cached) apply(cached);
       else return showError();
     }
     renderStatus();
   }
+}
+
+/** Копия меню, которую сохранил service worker: на случай, если localStorage очищен или переполнен. */
+async function cachedMenu() {
+  try {
+    const res = await caches.match('/offline/menu.json');
+    return res ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- Офлайн: предзагрузка фото текущей версии ----------
+
+/** Фото, которые понадобятся без сети: карточки (в первую очередь), затем крупные фото и галереи. */
+function precacheList(m) {
+  const cards = [];
+  const large = [];
+  for (const c of m.categories ?? []) {
+    if (c.image?.startsWith('/media/')) cards.push(c.image);
+    for (const i of c.items) {
+      if (i.images?.length) {
+        cards.push(variant(i.images[0], CARD_CSS_WIDTH));
+        i.images.forEach((img) => large.push(variant(img, SHEET_CSS_WIDTH)));
+      } else if (i.image?.startsWith('/media/')) {
+        cards.push(i.image);
+      }
+    }
+  }
+  return [...new Set([...cards, ...large])].slice(0, MAX_PRECACHE);
+}
+
+let precacheState = null;
+async function precache(m) {
+  if (PREVIEW || !('serviceWorker' in navigator) || !isSecureContext) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    (navigator.serviceWorker.controller ?? reg.active)?.postMessage({ type: 'precache', version: m.version, urls: precacheList(m), menu: m });
+  } catch { /* без service worker офлайн-режима нет */ }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type !== 'precache-status') return;
+    precacheState = e.data;
+    try { localStorage.setItem('restohub.precache', JSON.stringify(e.data)); } catch { /* не важно */ }
+    renderStatus();
+  });
 }
 
 async function loadPreview() {
@@ -180,6 +246,16 @@ function renderStatus() {
     els.status.classList.add('preview');
     return (els.status.hidden = false);
   }
+  if (!isSecureContext) {
+    // Для персонала при установке: без HTTPS service worker недоступен — офлайн-режима и запрета гаснуть экрану нет.
+    els.status.textContent = 'Меню открыто без HTTPS: офлайн-режим не работает. Откройте его по адресу https://…';
+    return (els.status.hidden = false);
+  }
+  if (DIAG) {
+    const p = precacheState ?? (() => { try { return JSON.parse(localStorage.getItem('restohub.precache')); } catch { return null; } })();
+    els.status.textContent = `Версия ${menu?.version ?? '—'}${offline ? ' · нет связи' : ''} · офлайн-фото: ${p ? `${p.done}/${p.total}${p.failed ? `, ошибок ${p.failed}` : ''}${p.quota ? ', не хватает места' : ''}${p.version !== menu?.version ? ' (прежняя версия)' : ''}` : 'ещё не загружены'}`;
+    return (els.status.hidden = false);
+  }
   if (!offline || !menu) return (els.status.hidden = true);
   const when = new Date(menu.updatedAt).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   els.status.textContent = `Нет связи. Показано меню от ${when}`;
@@ -265,7 +341,11 @@ for (const ev of ['pointerdown', 'scroll', 'keydown']) addEventListener(ev, rese
 document.addEventListener('visibilitychange', keepAwake);
 addEventListener('contextmenu', (e) => e.preventDefault());
 
-if ('serviceWorker' in navigator && !PREVIEW) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator && !PREVIEW) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // Просим браузер не вычищать кеш меню и фото при нехватке места.
+  navigator.storage?.persist?.().catch(() => {});
+}
 
 await load();
 listen();

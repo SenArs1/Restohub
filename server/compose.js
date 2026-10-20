@@ -11,7 +11,7 @@ export function mediaUrls(media) {
   const widths = [...media.widths].sort((a, b) => a - b);
   const main = widths.filter((w) => w <= 800).at(-1) ?? widths[0];
   const set = (ext) => widths.map((w) => `/media/${media.id}-${w}.${ext} ${w}w`).join(', ');
-  return { id: media.id, src: `/media/${media.id}-${main}.jpg`, srcset: set('jpg'), webp: set('webp'), width: media.width, height: media.height };
+  return { id: media.id, src: `/media/${media.id}-${main}.jpg`, srcset: set('jpg'), webp: set('webp'), widths, width: media.width, height: media.height };
 }
 
 const sortKey = (overlaySort, index) => (Number.isFinite(overlaySort) ? overlaySort : 100000 + index);
