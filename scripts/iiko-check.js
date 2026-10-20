@@ -1,0 +1,59 @@
+// Шаги 1–2 плана: проверяем доступ к iikoCloud, организацию Madi Cake и наличие внешнего меню.
+// Запуск: npm run iiko:check
+import { config } from '../server/config.js';
+import { IikoClient } from '../server/iiko.js';
+
+const cfg = config.iiko;
+if (!cfg.apiLogin) {
+  console.error('Заполните IIKO_API_LOGIN в .env (iikoWeb → Настройки → Облачное API → API-ключ)');
+  process.exit(1);
+}
+
+const client = new IikoClient(cfg);
+const ok = (s) => console.log(`  ✓ ${s}`);
+const no = (s) => console.log(`  ✗ ${s}`);
+
+try {
+  console.log(`\n1) Токен (${cfg.apiUrl})`);
+  await client.getToken();
+  ok('API-ключ принят');
+
+  console.log('\n2) Организации, доступные ключу');
+  const orgs = await client.organizations();
+  for (const o of orgs) console.log(`  • ${o.name}  id=${o.id}`);
+  const org = orgs.find((o) => o.id === cfg.organizationId) ??
+    orgs.find((o) => o.name?.trim().toLowerCase() === cfg.organizationName.toLowerCase());
+  org ? ok(`организация: ${org.name}`) : no(`не нашли «${cfg.organizationName}» — укажите IIKO_ORGANIZATION_ID`);
+
+  console.log('\n3) Внешние меню (iikoWeb → Внешние заказы → Внешние меню)');
+  const { externalMenus = [], priceCategories = [] } = await client.externalMenus();
+  for (const m of externalMenus) console.log(`  • ${m.name}  id=${m.id}`);
+  const menu = externalMenus.find((m) => m.id === cfg.externalMenuId) ??
+    externalMenus.find((m) => m.name?.trim().toLowerCase() === cfg.externalMenuName.toLowerCase());
+  menu ? ok(`внешнее меню: ${menu.name}`) : no(`внешнее меню «${cfg.externalMenuName}» не найдено — создайте его в iikoWeb`);
+
+  console.log('\n4) Категории цен');
+  if (!priceCategories.length) console.log('  — нет (используются базовые цены)');
+  for (const p of priceCategories) console.log(`  • ${p.name}  id=${p.id}`);
+
+  if (org && menu) {
+    console.log('\n5) Пробная загрузка меню');
+    const raw = await client.menuById({
+      externalMenuId: menu.id, organizationIds: [org.id], priceCategoryId: cfg.priceCategoryId,
+      version: cfg.menuVersion, language: cfg.language,
+    });
+    const cats = raw.itemCategories ?? [];
+    const items = cats.flatMap((c) => c.items ?? []);
+    const withImg = items.filter((i) => (i.itemSizes ?? []).some((s) => s.buttonImageUrl || s.buttonImageCroppedUrl));
+    const noPrice = items.filter((i) => !(i.itemSizes ?? []).some((s) => (s.prices ?? []).some((p) => typeof p.price === 'number')));
+    ok(`${cats.length} категорий, ${items.length} блюд, с фото: ${withImg.length}`);
+    if (noPrice.length) no(`без цены (на планшетах будут скрыты): ${noPrice.map((i) => i.name).join(', ')}`);
+
+    console.log('\nДобавьте в .env:');
+    console.log(`IIKO_ORGANIZATION_ID=${org.id}\nIIKO_EXTERNAL_MENU_ID=${menu.id}`);
+  }
+} catch (err) {
+  console.error(`\nОшибка: ${err.message}`);
+  if (err.body) console.error(JSON.stringify(err.body, null, 2));
+  process.exit(1);
+}

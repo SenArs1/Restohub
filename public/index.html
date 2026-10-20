@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#fbf5ef">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Madi Cake — меню</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Manrope:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <header class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48"><path d="M8 30h32v8a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z"/><path d="M10 30c0-6 6-10 14-10s14 4 14 10" fill="none"/><path d="M24 20v-6"/><circle cx="24" cy="10" r="3"/></svg>
+        </div>
+        <div>
+          <div class="brand-name" id="brandName">Madi Cake</div>
+          <div class="brand-sub">кондитерская</div>
+        </div>
+      </header>
+      <nav class="cats" id="cats" aria-label="Категории"></nav>
+      <footer class="status" id="status" hidden></footer>
+    </aside>
+
+    <main class="content" id="content">
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p>Загружаем меню…</p>
+      </div>
+    </main>
+  </div>
+
+  <div class="sheet" id="sheet" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <article class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <button class="sheet-close" data-close aria-label="Закрыть">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+      <div class="sheet-media" id="sheetMedia"></div>
+      <div class="sheet-body" id="sheetBody"></div>
+    </article>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
