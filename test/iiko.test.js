@@ -35,3 +35,16 @@ test('ключ нового формата без секрета: понятна
   const client = new IikoClient({ apiLogin: 'key', apiUrl: url });
   await assert.rejects(client.getToken(), /IIKO_CLIENT_SECRET и IIKO_APP_ID/);
 });
+
+test('сетевой сбой повторяется, HTTP-ошибка — нет', async (t) => {
+  const { url, seen } = await fakeIiko(t);
+  const realFetch = globalThis.fetch;
+  let failures = 1;
+  globalThis.fetch = (...args) => (failures-- > 0 ? Promise.reject(new TypeError('fetch failed')) : realFetch(...args));
+  t.after(() => { globalThis.fetch = realFetch; });
+  const client = new IikoClient({ apiLogin: 'key', clientSecret: 'secret', appId: 'app', apiUrl: url });
+  assert.equal(await client.getToken(), 'v2-token');
+  const before = seen.length;
+  await assert.rejects(new IikoClient({ apiLogin: 'key', apiUrl: url }).getToken());
+  assert.equal(seen.length - before, 1, 'ответ 403 не повторяется');
+});

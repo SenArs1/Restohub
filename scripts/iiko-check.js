@@ -32,6 +32,13 @@ try {
     externalMenus.find((m) => m.name?.trim().toLowerCase() === cfg.externalMenuName.toLowerCase());
   menu ? ok(`внешнее меню: ${menu.name}`) : no(`внешнее меню «${cfg.externalMenuName}» не найдено — создайте его в iikoWeb`);
 
+  if (org) {
+    const nom = await client.nomenclature(org.id);
+    const dishes = (nom.products ?? []).filter((p) => !p.isDeleted && ['Dish', 'Good'].includes(p.type));
+    console.log(`\n   Номенклатура в облаке: групп ${nom.groups?.length ?? 0}, блюд и товаров ${dishes.length}`);
+    if (!dishes.length) no('номенклатура пустая — внешнему меню не из чего брать блюда; проверьте, что iikoRMS выгружает её в облако');
+  }
+
   console.log('\n4) Категории цен');
   if (!priceCategories.length) console.log('  — нет (используются базовые цены)');
   for (const p of priceCategories) console.log(`  • ${p.name}  id=${p.id}`);
@@ -46,7 +53,8 @@ try {
     const items = cats.flatMap((c) => c.items ?? []);
     const withImg = items.filter((i) => (i.itemSizes ?? []).some((s) => s.buttonImageUrl || s.buttonImageCroppedUrl));
     const noPrice = items.filter((i) => !(i.itemSizes ?? []).some((s) => (s.prices ?? []).some((p) => typeof p.price === 'number')));
-    ok(`${cats.length} категорий, ${items.length} блюд, с фото: ${withImg.length}`);
+    (items.length ? ok : no)(`${cats.length} категорий, ${items.length} блюд, с фото: ${withImg.length}`);
+    if (!items.length) no('внешнее меню пустое — добавьте в него категории и блюда в iikoWeb и сохраните/опубликуйте');
     if (noPrice.length) no(`без цены (на планшетах будут скрыты): ${noPrice.map((i) => i.name).join(', ')}`);
 
     console.log('\nДобавьте в .env:');

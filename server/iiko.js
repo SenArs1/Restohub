@@ -21,7 +21,18 @@ export class IikoClient {
     this.tokenExpiresAt = 0;
   }
 
-  async #post(path, body, token) {
+  // Сетевые сбои (обрыв соединения, таймаут) повторяем; HTTP-ошибки iiko — нет.
+  async #post(path, body, token, attempt = 1) {
+    try {
+      return await this.#request(path, body, token);
+    } catch (err) {
+      if (err instanceof IikoError || attempt >= 3) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+      return this.#post(path, body, token, attempt + 1);
+    }
+  }
+
+  async #request(path, body, token) {
     const res = await fetch(this.apiUrl + path, {
       method: 'POST',
       headers: {
