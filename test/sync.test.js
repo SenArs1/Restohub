@@ -9,6 +9,7 @@ import { externalMenu, ORG } from './fixtures.js';
 
 test('MenuStore: синхронизация, новая версия при смене цены, кеш при недоступности iiko', async (t) => {
   let price = 420;
+  let nomPrice = 420;
   let down = false;
   const calls = [];
   const fake = createServer(async (req, res) => {
@@ -22,6 +23,9 @@ test('MenuStore: синхронизация, новая версия при см
     assert.equal(req.headers.authorization, 'Bearer tkn');
     if (req.url === '/api/1/organizations') return send({ organizations: [{ id: ORG, name: 'Madi Cake' }] });
     if (req.url === '/api/2/menu') return send({ externalMenus: [{ id: 'menu-1', name: 'Madi Cake' }], priceCategories: [] });
+    if (req.url === '/api/1/nomenclature') {
+      return send({ products: [{ id: 'p-1', name: 'Медовик', sizePrices: [{ sizeId: null, price: { currentPrice: nomPrice } }] }] });
+    }
     if (req.url === '/api/2/menu/by_id') {
       assert.equal(JSON.parse(body).externalMenuId, 'menu-1');
       const m = externalMenu(price);
@@ -48,6 +52,12 @@ test('MenuStore: синхронизация, новая версия при см
   assert.match(item.image, /^\/media\/[0-9a-f]+\.jpg$/, 'фото скачано локально');
   assert.equal(await readFile(path.join(dataDir, 'media', path.basename(item.image)), 'utf8'), 'JPEG');
 
+  assert.deepEqual(store.status.priceCheck.mismatches, [], 'цены совпадают');
+
+  nomPrice = 450; // цену поменяли в iiko, внешнее меню не обновили
+  await store.sync();
+  assert.deepEqual(store.status.priceCheck.mismatches.map((m) => [m.name, m.iikoPrice, m.menuPrice]), [['Медовик', 450, 420]]);
+
   let updated = 0;
   store.on('updated', () => updated++);
   await store.sync();
@@ -58,6 +68,7 @@ test('MenuStore: синхронизация, новая версия при см
   assert.equal(updated, 1);
   assert.notEqual(store.menu.version, v1);
   assert.equal(store.menu.categories[0].items[0].price, 450);
+  assert.deepEqual(store.status.priceCheck.mismatches, [], 'после обновления внешнего меню расхождений нет');
 
   down = true;
   await store.sync();

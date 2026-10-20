@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Restohub — состояние</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Manrope:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body { user-select: text; -webkit-user-select: text; overflow-y: auto; }
+    .page { max-width: 880px; margin: 0 auto; padding: 40px 20px 60px; display: flex; flex-direction: column; gap: 20px; }
+    .page h1 { margin: 0; font: 600 40px/1.1 var(--serif); }
+    .panel { background: var(--paper); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px 26px; }
+    .panel h2 { margin: 0 0 14px; font: 600 26px/1.2 var(--serif); }
+    .rows { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; }
+    .rows dt { color: var(--cocoa-soft); }
+    .rows dd { margin: 0; font-weight: 500; }
+    .ok { color: #3d7a4f; }
+    .bad { color: #b4472f; }
+    table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    th { color: var(--cocoa-soft); font-weight: 500; font-size: 13px; }
+    td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .hint { margin: 14px 0 0; color: var(--cocoa-soft); font-size: 14px; }
+    .muted { color: var(--cocoa-soft); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>Restohub · состояние</h1>
+    <section class="panel">
+      <h2>Синхронизация с iiko</h2>
+      <dl class="rows" id="sync"><dt>Загрузка…</dt><dd></dd></dl>
+    </section>
+    <section class="panel">
+      <h2>Сверка цен</h2>
+      <div id="prices">Загрузка…</div>
+    </section>
+    <p class="muted" id="updated"></p>
+  </main>
+  <script type="module">
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const when = (iso) => (iso ? new Date(iso).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—');
+    let currency = '₽';
+    const money = (v) => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v)} ${esc(currency)}`;
+
+    function render(s) {
+      const source = { iiko: 'iikoCloud', demo: 'демо-данные' }[s.source] ?? s.source;
+      document.getElementById('sync').innerHTML = `
+        <dt>Источник</dt><dd>${esc(source)}</dd>
+        <dt>Последняя успешная</dt><dd>${esc(when(s.lastSuccessAt))}</dd>
+        <dt>Ошибка</dt><dd class="${s.lastError ? 'bad' : 'ok'}">${s.lastError ? esc(s.lastError) : 'нет'}</dd>
+        <dt>Версия меню</dt><dd>${esc(s.version ?? '—')}</dd>
+        <dt>Планшетов онлайн</dt><dd>${s.tablets}</dd>`;
+
+      const pc = s.priceCheck;
+      const el = document.getElementById('prices');
+      if (s.source !== 'iiko') el.innerHTML = '<p class="muted">Сверка работает только с данными iiko.</p>';
+      else if (!pc) el.innerHTML = '<p class="muted">Сверка ещё не выполнялась (или задана категория цен).</p>';
+      else if (!pc.mismatches.length && !pc.error) el.innerHTML = `<p class="ok">Цены внешнего меню совпадают с номенклатурой iiko ✓</p><p class="muted">Проверено: ${esc(when(pc.checkedAt))}</p>`;
+      else {
+        el.innerHTML = `
+          ${pc.error ? `<p class="bad">Сверка не удалась: ${esc(pc.error)}</p>` : ''}
+          ${pc.mismatches.length ? `
+            <p class="bad">Расхождений: ${pc.mismatches.length}. На планшетах сейчас цена из внешнего меню.</p>
+            <table>
+              <thead><tr><th>Блюдо</th><th class="num">В iiko</th><th class="num">Во внешнем меню</th></tr></thead>
+              <tbody>${pc.mismatches.map((m) => `<tr><td>${esc(m.name)}${m.size ? ` <span class="muted">${esc(m.size)}</span>` : ''}</td><td class="num">${money(m.iikoPrice)}</td><td class="num">${money(m.menuPrice)}</td></tr>`).join('')}</tbody>
+            </table>
+            <p class="hint">Обновите цену в карточке блюда: iikoWeb → Внешние заказы → Внешние меню. Restohub подхватит её при следующей синхронизации.</p>` : ''}
+          <p class="muted">Проверено: ${esc(when(pc.checkedAt))}</p>`;
+      }
+      document.getElementById('updated').textContent = `Страница обновлена: ${when(new Date().toISOString())}. Обновляется каждые 30 секунд.`;
+    }
+
+    async function load() {
+      try {
+        if (!load.menuChecked) {
+          load.menuChecked = true;
+          const menu = await fetch('/api/menu').then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          currency = menu?.restaurant?.currency ?? currency;
+        }
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        render(await res.json());
+      } catch {
+        document.getElementById('updated').textContent = 'Нет связи с сервером Restohub.';
+      }
+    }
+    load();
+    setInterval(load, 30000);
+  </script>
+</body>
+</html>

@@ -64,6 +64,11 @@ npm run iiko:prices -- --diff   # повторяем через 5 / 15 / 60 ми
 | Новая цена во внешнем меню | **не появилась сама** — за 17 минут наблюдения осталась 900 ₽ |
 | После ручного обновления цены в карточке блюда внешнего меню | 901 ₽ сразу, Restohub отдал её при следующей синхронизации |
 
+**Автоматическая сверка.** При каждой синхронизации Restohub сравнивает цены внешнего меню с
+номенклатурой iiko. Расхождения видны на странице **`/status.html`** (например, `http://<сервер>:8080/status.html`)
+и в логе сервера: «Дорадо: в iiko 950, во внешнем меню 900 — обновите цену в карточке блюда».
+Если задана категория цен (`IIKO_PRICE_CATEGORY_ID`), сверка отключается — там цены отличаются намеренно.
+
 **Регламент для заведения:** после изменения цен в iiko обновить цену в карточке блюда во внешнем меню
 iikoWeb (Внешние заказы → Внешние меню). Restohub подхватит изменение в течение `SYNC_INTERVAL_MIN`
 минут или сразу — через `POST /api/sync`.
@@ -99,15 +104,15 @@ curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8080/api/sync
 | Метод | Путь | Описание |
 |---|---|---|
 | GET | `/api/menu` | Меню (поддерживает `ETag` / `If-None-Match`) |
-| GET | `/api/status` | Источник, время последней синхронизации, ошибка, число подключённых планшетов |
+| GET | `/api/status` | Источник, время последней синхронизации, ошибка, число подключённых планшетов, сверка цен (`priceCheck`) |
 | GET | `/api/events` | SSE-поток событий `menu` с версией |
 | POST | `/api/sync` | Принудительная синхронизация (заголовок `X-Admin-Token`) |
 
 ## Структура
 
 ```
-server/   config.js · iiko.js (клиент iikoCloud) · normalize.js · sync.js (кеш и версии) · index.js
-public/   index.html · styles.css · app.js · sw.js (офлайн) · manifest.webmanifest
+server/   config.js · iiko.js (клиент iikoCloud) · normalize.js · prices.js (сверка цен) · sync.js (кеш и версии) · index.js
+public/   index.html · styles.css · app.js · sw.js (офлайн) · manifest.webmanifest · status.html (состояние и сверка цен)
 scripts/  iiko-check.js (шаги 1–3) · price-check.js (проверка цен)
 test/     разбор внешнего меню и полный цикл синхронизации против фейкового iikoCloud
 ```

@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { IikoClient, resolveTargets } from './iiko.js';
 import { normalizeExternalMenu } from './normalize.js';
+import { findPriceMismatches } from './prices.js';
 import { demoMenu } from './demo-menu.js';
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
@@ -26,7 +27,10 @@ export class MenuStore extends EventEmitter {
     this.menuFile = path.join(config.dataDir, 'menu.json');
     this.mediaDir = path.join(config.dataDir, 'media');
     this.menu = null;
-    this.status = { source: config.demo ? 'demo' : 'iiko', lastSyncAt: null, lastSuccessAt: null, lastError: null, syncing: false };
+    this.status = {
+      source: config.demo ? 'demo' : 'iiko', lastSyncAt: null, lastSuccessAt: null, lastError: null, syncing: false,
+      priceCheck: null,
+    };
     this.client = config.demo ? null : new IikoClient(config.iiko);
     this.targets = null;
   }
@@ -91,10 +95,29 @@ export class MenuStore extends EventEmitter {
       version: cfg.menuVersion,
       language: cfg.language,
     });
+    await this.#checkPrices(raw, org.id);
     const content = normalizeExternalMenu(raw, { organizationId: org.id });
     if (!content.categories.length) throw new Error('Внешнее меню пустое — проверьте его наполнение и цены в iikoWeb');
     if (this.config.cacheImages) await this.#cacheImages(content);
     return content;
+  }
+
+  /** Сверяет цены внешнего меню с номенклатурой. Ошибка сверки не мешает синхронизации меню. */
+  async #checkPrices(raw, organizationId) {
+    // С категорией цен внешнее меню намеренно отличается от базовых цен — сверять не с чем.
+    if (this.config.iiko.priceCategoryId) return;
+    const prev = this.status.priceCheck?.mismatches ?? [];
+    try {
+      const mismatches = findPriceMismatches(raw, await this.client.nomenclature(organizationId), organizationId);
+      this.status.priceCheck = { checkedAt: new Date().toISOString(), mismatches, error: null };
+      const fresh = mismatches.filter((m) => !prev.some((p) => p.id === m.id && p.size === m.size && p.iikoPrice === m.iikoPrice));
+      for (const m of fresh) {
+        console.warn(`[prices] ${m.name}${m.size ? ` (${m.size})` : ''}: в iiko ${m.iikoPrice}, во внешнем меню ${m.menuPrice} — обновите цену в карточке блюда`);
+      }
+    } catch (err) {
+      this.status.priceCheck = { checkedAt: new Date().toISOString(), mismatches: prev, error: err.message };
+      console.warn('[prices] сверка не удалась:', err.message);
+    }
   }
 
   /** Скачивает фото на сервер и подменяет ссылки на локальные /media/... */

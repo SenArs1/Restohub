@@ -8,34 +8,12 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../server/config.js';
 import { IikoClient, resolveTargets } from '../server/iiko.js';
+import { externalPrices, findPriceMismatches, lookupNomenclature, nomenclaturePrices } from '../server/prices.js';
 
 const dir = path.join(config.dataDir, 'price-snapshots');
 const diffMode = process.argv.includes('--diff');
 const client = new IikoClient(config.iiko);
 const fmt = (v) => (v == null ? '—' : String(v));
-
-function nomenclaturePrices(nom) {
-  const map = new Map();
-  for (const p of nom.products ?? []) {
-    for (const sp of p.sizePrices ?? []) {
-      map.set(`${p.id}:${sp.sizeId ?? ''}`, { name: p.name, price: sp.price?.currentPrice ?? null, inMenu: sp.price?.isIncludedInMenu });
-    }
-  }
-  return map;
-}
-
-function externalPrices(raw, orgId) {
-  const map = new Map();
-  for (const cat of raw.itemCategories ?? []) {
-    for (const item of cat.items ?? []) {
-      for (const s of item.itemSizes ?? []) {
-        const p = (s.prices ?? []).find((x) => x.organizationId === orgId) ?? s.prices?.[0];
-        map.set(`${item.itemId}:${s.sizeId ?? ''}`, { name: item.name, price: p?.price ?? null });
-      }
-    }
-  }
-  return map;
-}
 
 try {
   const { org, menu } = await resolveTargets(client, config.iiko);
@@ -44,22 +22,18 @@ try {
     client.menuById({ externalMenuId: menu.id, organizationIds: [org.id], priceCategoryId: config.iiko.priceCategoryId, version: config.iiko.menuVersion, language: config.iiko.language }),
   ]);
   const base = nomenclaturePrices(nom);
-  const ext = externalPrices(raw, org.id);
-
   const snapshot = { at: new Date().toISOString(), organization: org.name, menu: menu.name, items: {} };
-  const mismatches = [];
-  for (const [key, e] of ext) {
-    const b = base.get(key) ?? base.get(`${key.split(':')[0]}:`);
-    snapshot.items[key] = { name: e.name, external: e.price, nomenclature: b?.price ?? null };
-    if (b && b.price !== e.price) mismatches.push([e.name, b.price, e.price]);
+  for (const [key, e] of externalPrices(raw, org.id)) {
+    snapshot.items[key] = { name: e.name, external: e.price, nomenclature: lookupNomenclature(base, key, e.primary)?.price ?? null };
   }
+  const mismatches = findPriceMismatches(raw, nom, org.id);
 
-  console.log(`\n${org.name} · внешнее меню «${menu.name}» · позиций: ${ext.size}`);
+  console.log(`\n${org.name} · внешнее меню «${menu.name}» · позиций: ${Object.keys(snapshot.items).length}`);
   if (config.iiko.priceCategoryId) console.log('Внимание: задана категория цен — расхождение с базовой ценой может быть ожидаемым.');
   if (!mismatches.length) console.log('Цены внешнего меню совпадают с номенклатурой ✓');
   else {
     console.log(`\nРасхождения (номенклатура → внешнее меню): ${mismatches.length}`);
-    for (const [n, b, e] of mismatches) console.log(`  • ${n}: ${fmt(b)} → ${fmt(e)}`);
+    for (const m of mismatches) console.log(`  • ${m.name}${m.size ? ` (${m.size})` : ''}: ${fmt(m.iikoPrice)} → ${fmt(m.menuPrice)}`);
   }
 
   await mkdir(dir, { recursive: true });
