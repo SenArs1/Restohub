@@ -17,7 +17,7 @@ iikoWeb: внешнее меню, стоп-лист ──► iikoCloud API ─�
 
 ## Быстрый старт
 
-Нужен Node.js 22.5+ (встроенный SQLite). Зависимости: `sharp` (обработка фото), `preact` и `htm` (админка).
+Нужен Node.js 22.5+ (встроенный SQLite). Зависимости: `sharp` (обработка фото), `preact` и `htm` (админка); для E2E — `playwright` (dev).
 
 ```bash
 npm install
