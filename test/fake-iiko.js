@@ -47,7 +47,7 @@ export async function startFakeIiko(t) {
 }
 
 export const testConfig = (dataDir, apiUrl) => ({
-  demo: false, dataDir, publicDir: new URL('../public', import.meta.url).pathname, cacheImages: true,
+  demo: false, dataDir, backupDir: `${dataDir}-backups`, mediaGraceHours: 24, publicDir: new URL('../public', import.meta.url).pathname, cacheImages: true,
   restaurantName: 'Madi Cake', currency: '₽', idleSeconds: 90, syncIntervalMin: 60, stopListIntervalSec: 60,
   adminToken: 'tok', cookieSecure: false,
   iiko: { apiLogin: 'key', apiUrl, organizationName: 'Madi Cake', externalMenuName: 'Madi Cake', retryDelayMs: 5 },

@@ -13,7 +13,9 @@
     "iiko:check": "node scripts/iiko-check.js",
     "iiko:prices": "node scripts/price-check.js",
     "test": "node --test test/*.test.js",
-    "admin:user": "node scripts/admin-user.js"
+    "admin:user": "node scripts/admin-user.js",
+    "backup": "node scripts/backup.js",
+    "media:cleanup": "node scripts/media-cleanup.js"
   },
   "dependencies": {
     "htm": "^3.1.1",

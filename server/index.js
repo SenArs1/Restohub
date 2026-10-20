@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { openDb } from './db.js';
@@ -7,6 +7,7 @@ import { ContentStore } from './content.js';
 import { IikoSync } from './sync.js';
 import { Publisher } from './publisher.js';
 import { createApp } from './app.js';
+import { PID_FILE, createBackup, listBackups, pruneBackups } from './backup.js';
 
 mkdirSync(config.dataDir, { recursive: true });
 const db = openDb(path.join(config.dataDir, 'restohub.db'));
@@ -19,8 +20,32 @@ const tls = config.tlsCertFile && config.tlsKeyFile
   : null;
 const server = createApp({ config, sync, content, auth, publisher, tls });
 
+// PID-файл: восстановление из копии откажется работать, пока сервер запущен.
+const pidFile = path.join(config.dataDir, PID_FILE);
+writeFileSync(pidFile, String(process.pid));
+const cleanup = () => rmSync(pidFile, { force: true });
+process.on('exit', cleanup);
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
+
+/** Автоматическая копия, если последняя старше интервала; старые автокопии удаляются. */
+async function autoBackup() {
+  try {
+    const last = (await listBackups(config.backupDir)).find((b) => b.name.startsWith('restohub-auto-'));
+    if (last?.createdAt && Date.now() - Date.parse(last.createdAt) < config.backupIntervalHours * 3600 * 1000 * 0.95) return;
+    const { name } = await createBackup({ db, dataDir: config.dataDir, backupDir: config.backupDir, kind: 'auto' });
+    const removed = await pruneBackups(config.backupDir, config.backupKeep);
+    console.log(`[backup] автокопия ${name}${removed.length ? `, удалены старые: ${removed.length}` : ''}`);
+  } catch (err) {
+    console.error('[backup] автокопия не создана:', err.message);
+  }
+}
+
 await sync.init();
 publisher.rebuild();
+if (config.backupIntervalHours > 0) {
+  setTimeout(autoBackup, 60 * 1000).unref();
+  setInterval(autoBackup, Math.min(config.backupIntervalHours, 6) * 3600 * 1000).unref();
+}
 server.listen(config.port, config.host, () => {
   const scheme = tls ? 'https' : 'http';
   console.log(`Restohub: ${scheme}://${config.host}:${config.port}  (источник: ${config.demo ? 'демо-данные' : 'iikoCloud'})`);

@@ -65,7 +65,12 @@ test('права менеджера: контент и публикация — 
     'POST /api/admin/publications/999999/restore',
     'POST /api/admin/users',
     'POST /api/admin/users/nobody/password',
-  ].sort().concat(owners.filter((o) => /backup|media\/cleanup/.test(o))).sort());
+    'GET /api/admin/maintenance/media',
+    'POST /api/admin/maintenance/media/cleanup',
+    'GET /api/admin/backups',
+    'POST /api/admin/backups',
+    'POST /api/admin/backups/nobody/verify',
+  ].sort());
   const managers = server.routeTable.filter((r) => r.role === 'manager').map((r) => `${r.method} ${samplePath(r.pattern)}`);
   for (const r of ['PATCH /api/admin/items/nobody', 'POST /api/admin/media', 'POST /api/admin/publish', 'POST /api/admin/discard', 'POST /api/admin/sync']) {
     assert.ok(managers.includes(r), r);

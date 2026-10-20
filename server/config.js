@@ -24,6 +24,12 @@ export const config = {
   port: num('PORT', 8080),
   host: env('HOST', '0.0.0.0'),
   dataDir: env('DATA_DIR') ? path.resolve(ROOT, env('DATA_DIR')) : path.join(ROOT, 'data'),
+  // Резервные копии: папка (лучше на другом диске), интервал автокопий в часах (0 — выключено), сколько хранить.
+  backupDir: env('BACKUP_DIR') ? path.resolve(ROOT, env('BACKUP_DIR')) : path.join(ROOT, 'backups'),
+  backupIntervalHours: Number(env('BACKUP_INTERVAL_HOURS', '24')),
+  backupKeep: num('BACKUP_KEEP', 14),
+  // Неиспользуемые фото моложе этого срока не удаляются (могли загрузить, но ещё не сохранить в блюдо).
+  mediaGraceHours: num('MEDIA_GRACE_HOURS', 24),
   publicDir: path.join(ROOT, 'public'),
 
   restaurantName: env('RESTAURANT_NAME', 'Madi Cake'),

@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { createReadStream, readFileSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { ROOT } from './config.js';
@@ -9,6 +9,8 @@ import { BADGES, composeMenu, mediaUrls } from './compose.js';
 import { SESSION_COOKIE } from './auth.js';
 import { MAX_UPLOAD_BYTES, processImage } from './media.js';
 import { health } from './health.js';
+import { cleanupMedia, planMediaCleanup } from './maintenance.js';
+import { createBackup, listBackups, verifyBackup } from './backup.js';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -202,6 +204,52 @@ export function createApp({ config, sync, content, auth, publisher, tls = null }
 
   const afterPublish = () => publisher.rebuild();
 
+  // Фото iiko из текущего, запасного и удержанного снимков очистка не трогает.
+  async function snapshotsInUse() {
+    const list = [sync.snapshot?.content, sync.held?.content];
+    try {
+      list.push(JSON.parse(await readFile(sync.prevSnapshotFile, 'utf8')).content);
+    } catch { /* запасного снимка нет */ }
+    return list.filter(Boolean);
+  }
+
+  /** Обслуживание — только владелец: очистка фото и резервные копии. */
+  function routesMaintenance(routes) {
+    const cleanupOpts = async () => ({ db: content.db, mediaDir: sync.mediaDir, snapshots: await snapshotsInUse(), graceHours: config.mediaGraceHours });
+    const summary = (plan) => ({
+      media: plan.media.length,
+      orphanFiles: plan.orphanFiles.length,
+      iikoFiles: plan.iikoFiles.length,
+      tmpFiles: plan.tmpFiles.length,
+      bytes: plan.bytes,
+      kept: plan.kept,
+      graceHours: config.mediaGraceHours,
+    });
+    const backupName = (name) => {
+      if (!/^restohub-(auto|manual)-\d{8}-\d{6}$/.test(name)) throw new HttpError(400, 'Неверное имя копии');
+      return path.join(config.backupDir, name);
+    };
+    routes.push(
+      ['GET', /^\/api\/admin\/maintenance\/media$/, async () => ({ plan: summary(await planMediaCleanup(await cleanupOpts())) }), 'owner'],
+      ['POST', /^\/api\/admin\/maintenance\/media\/cleanup$/, async (req, p, user) => {
+        const result = await cleanupMedia(await cleanupOpts());
+        console.log(`[media] очистка (${user.login}): записей ${result.media.length}, файлов ${result.removedFiles}, ${result.bytes} байт`);
+        return { result: { ...summary(result), removedFiles: result.removedFiles } };
+      }, 'owner'],
+      ['GET', /^\/api\/admin\/backups$/, async () => ({ backups: await listBackups(config.backupDir), dir: config.backupDir }), 'owner'],
+      ['POST', /^\/api\/admin\/backups$/, async (req, p, user) => {
+        const { name, manifest } = await createBackup({ db: content.db, dataDir: config.dataDir, backupDir: config.backupDir, kind: 'manual' });
+        console.log(`[backup] ${name} (${user.login})`);
+        return { name, counts: manifest.counts };
+      }, 'owner'],
+      ['POST', /^\/api\/admin\/backups\/([^/]+)\/verify$/, async (req, [name]) => {
+        const { ok, errors, manifest } = await verifyBackup(backupName(name));
+        return { ok, errors, counts: manifest?.counts ?? null };
+      }, 'owner'],
+    );
+  }
+
+
   // Маршруты админки: [метод, шаблон пути, обработчик(req, params, user)]
   const adminRoutes = [
     ['GET', /^\/api\/admin\/state$/, (req, p, user) => adminState(user)],
@@ -271,6 +319,8 @@ export function createApp({ config, sync, content, auth, publisher, tls = null }
       return { users: auth.listUsers() };
     }, 'owner'],
   ];
+
+  routesMaintenance(adminRoutes);
 
   /** Маршруты и требуемые роли — для проверки прав в тестах и документации. */
   const routeTable = adminRoutes.map(([method, re, , role]) => ({ method, pattern: re.source, role: role ?? 'manager' }));
