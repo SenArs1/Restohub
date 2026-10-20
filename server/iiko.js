@@ -10,10 +10,11 @@ export class IikoError extends Error {
 }
 
 export class IikoClient {
-  constructor({ apiLogin, clientSecret, apiUrl, timeoutMs = 30000 }) {
+  constructor({ apiLogin, clientSecret, appId, apiUrl, timeoutMs = 30000 }) {
     if (!apiLogin) throw new Error('IIKO_API_LOGIN не задан');
     this.apiLogin = apiLogin;
     this.clientSecret = clientSecret;
+    this.appId = appId;
     this.apiUrl = apiUrl;
     this.timeoutMs = timeoutMs;
     this.token = null;
@@ -41,18 +42,20 @@ export class IikoClient {
   }
 
   // Ключи старого формата (apiLogin) получают токен через /api/1/access_token,
-  // ключи нового формата — через /api/v2/access_token с парой apiKey + clientSecret.
+  // ключи нового формата — через /api/v2/access_token: apiKey + clientSecret + appId приложения
+  // server-to-server с портала разработчика iiko.
   async getToken(force = false) {
     if (!force && this.token && Date.now() < this.tokenExpiresAt) return this.token;
     let data;
     if (this.clientSecret) {
-      data = await this.#post('/api/v2/access_token', { apiKey: this.apiLogin, clientSecret: this.clientSecret });
+      if (!this.appId) throw new Error('Для ключа нового формата нужен IIKO_APP_ID — id приложения на портале разработчика iiko');
+      data = await this.#post('/api/v2/access_token', { apiKey: this.apiLogin, clientSecret: this.clientSecret, appId: this.appId });
     } else {
       try {
         data = await this.#post('/api/1/access_token', { apiLogin: this.apiLogin });
       } catch (err) {
         if (/api\/v2\/access_token/.test(err.message)) {
-          err.message = 'Ключ нового формата: нужен IIKO_CLIENT_SECRET (выдаётся вместе с API-ключом) — ' + err.message;
+          err.message = 'Ключ нового формата: нужны IIKO_CLIENT_SECRET и IIKO_APP_ID (приложение server-to-server на портале разработчика iiko) — ' + err.message;
         }
         throw err;
       }

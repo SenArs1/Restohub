@@ -24,14 +24,14 @@ async function fakeIiko(t) {
 
 test('ключ нового формата: токен через /api/v2/access_token', async (t) => {
   const { url, seen } = await fakeIiko(t);
-  const client = new IikoClient({ apiLogin: 'key', clientSecret: 'secret', apiUrl: url });
+  const client = new IikoClient({ apiLogin: 'key', clientSecret: 'secret', appId: 'app', apiUrl: url });
   assert.deepEqual(await client.organizations(), [{ id: 'o', name: 'Madi Cake' }]);
-  assert.deepEqual(seen[0], { url: '/api/v2/access_token', body: { apiKey: 'key', clientSecret: 'secret' }, auth: undefined });
+  assert.deepEqual(seen[0], { url: '/api/v2/access_token', body: { apiKey: 'key', clientSecret: 'secret', appId: 'app' }, auth: undefined });
   assert.equal(seen[1].auth, 'Bearer v2-token');
 });
 
 test('ключ нового формата без секрета: понятная ошибка', async (t) => {
   const { url } = await fakeIiko(t);
   const client = new IikoClient({ apiLogin: 'key', apiUrl: url });
-  await assert.rejects(client.getToken(), /IIKO_CLIENT_SECRET/);
+  await assert.rejects(client.getToken(), /IIKO_CLIENT_SECRET и IIKO_APP_ID/);
 });

@@ -26,13 +26,13 @@ npm test
 | Шаг | Что делаем | Как проверить |
 |---|---|---|
 | 1. iikoWeb | Внешние заказы → Внешние меню: есть ли меню «Madi Cake»; если нет — создать, добавить категории, блюда, фото, описания | `npm run iiko:check`, пункт 3 |
-| 2. iikoCloud API | iikoWeb → Настройки → Облачное API: создать API-ключ с доступом к организации Madi Cake, вписать его в `IIKO_API_LOGIN`. Для ключа нового формата также указать `IIKO_CLIENT_SECRET` | `npm run iiko:check`, пункты 1–2 |
+| 2. iikoCloud API | iikoWeb → Настройки → Облачное API: создать API-ключ с доступом к организации Madi Cake, вписать его в `IIKO_API_LOGIN`. Для ключа нового формата также создать приложение типа server-to-server на портале разработчика iiko и указать `IIKO_CLIENT_SECRET` и `IIKO_APP_ID` | `npm run iiko:check`, пункты 1–2 |
 | 3. Получение данных | Сервер забирает категории, блюда, цены, описания, веса, КБЖУ, аллергены и фото через `/api/2/menu/by_id` | `npm run iiko:check`, пункт 5; затем `npm start` |
 | 4. Меню | `public/` — интерфейс под планшеты в стиле кондитерской | открыть `http://<сервер>:8080` на планшете |
 | 5. Синхронизация | Опрос iiko каждые `SYNC_INTERVAL_MIN` минут, мгновенная рассылка планшетам, офлайн-кеш | `GET /api/status` |
 
 Ключи старого формата получают токен через `/api/1/access_token` (только `apiLogin`), ключи нового
-формата — через `/api/v2/access_token` (пара `apiKey` + `clientSecret`). Если секрет не задан, а ключ
+формата — через `/api/v2/access_token` (`apiKey` + `clientSecret` + `appId`). Если секрет не задан, а ключ
 нового формата, `iiko:check` прямо об этом скажет.
 
 `npm run iiko:check` в конце выводит `IIKO_ORGANIZATION_ID` и `IIKO_EXTERNAL_MENU_ID` — их лучше
