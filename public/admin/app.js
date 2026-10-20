@@ -39,6 +39,16 @@ async function api(method, path, body, headers = {}) {
 const num = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
 const when = (iso) => (iso ? new Date(iso).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
 const smallest = (m) => m.srcset.split(', ')[0].split(' ')[0];
+const mb = (bytes) => `${num.format(Math.round((bytes / 1024 / 1024) * 10) / 10)} МБ`;
+/** «только что», «12 мин назад», «3 ч назад», «2 дн назад». */
+function ago(iso) {
+  if (!iso) return 'никогда';
+  const min = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+  if (min < 1) return 'только что';
+  if (min < 60) return `${min} мин назад`;
+  if (min < 48 * 60) return `${Math.floor(min / 60)} ч назад`;
+  return `${Math.floor(min / 1440)} дн назад`;
+}
 const sortKey = (sort, i) => (Number.isFinite(sort) ? sort : 100000 + i);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -110,6 +120,7 @@ function Login({ setupRequired, onLogin }) {
     <form onSubmit=${submit}>
       <h1>Restohub</h1>
       <p>Админка электронного меню</p>
+      ${location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(location.hostname) && html`<div class="alert bad">Соединение без HTTPS: пароль передаётся открыто. Используйте адрес https://…</div>`}
       ${setupRequired && html`<div class="alert warn">Пользователей ещё нет. На сервере выполните<br /><code>npm run admin:user -- логин owner</code></div>`}
       ${error && html`<div class="alert bad">${error}</div>`}
       <div class="field"><label for="login">Логин</label><input id="login" type="text" autocomplete="username" value=${login} onInput=${(e) => setLogin(e.target.value)} required /></div>
@@ -477,13 +488,19 @@ function PublishDrawer({ data, ctx, onClose }) {
     ${data.publications.length
       ? html`<ul class="history">${data.publications.map((p, i) => html`<li>
           <span class="meta">#${p.id} ${p.note || 'Без комментария'}<small>${when(p.createdAt)} · ${p.createdBy ?? '—'}${i === 0 ? ' · сейчас на планшетах' : ''}</small></span>
-          ${i > 0 && html`<button class="btn small" disabled=${busy} onClick=${() => restore(p)}>Вернуть</button>`}
-        </li>`)}</ul>`
+          ${i > 0 && ctx.me.role === 'owner' && html`<button class="btn small" disabled=${busy} onClick=${() => restore(p)}>Вернуть</button>`}
+        </li>`)}</ul>
+        ${ctx.me.role !== 'owner' && data.publications.length > 1 && html`<p class="hint">Вернуть прошлую публикацию может владелец.</p>`}`
       : html`<p class="hint">Публикаций ещё не было: планшеты показывают меню из iiko как есть.</p>`}
   <//>`;
 }
 
+function Section({ title, children }) {
+  return html`<section class="drawer-section"><h2>${title}</h2>${children}</section>`;
+}
+
 function SettingsDrawer({ data, ctx, onClose }) {
+  const owner = ctx.me.role === 'owner';
   const mode = data.draft.settings.soldOutMode ?? 'mark';
   const change = async (soldOutMode) => {
     try {
@@ -495,12 +512,171 @@ function SettingsDrawer({ data, ctx, onClose }) {
     }
   };
   return html`<${Drawer} title="Настройки" onClose=${onClose}>
-    <p class="label" style="margin:0 0 10px">Блюдо в стоп-листе iiko</p>
-    <label class="radio"><input type="radio" name="sold" checked=${mode === 'mark'} onChange=${() => change('mark')} />
-      <span><b>Показывать с пометкой «Закончилось»</b><span class="hint">Гость видит, что блюдо бывает, но сейчас его нет.</span></span></label>
-    <label class="radio"><input type="radio" name="sold" checked=${mode === 'hide'} onChange=${() => change('hide')} />
-      <span><b>Скрывать</b><span class="hint">Блюдо пропадает с планшетов, пока его не уберут из стоп-листа.</span></span></label>
-    <p class="hint" style="margin-top:14px">Стоп-лист проверяется раз в минуту.</p>
+    <${Section} title="Блюдо в стоп-листе iiko">
+      <label class="radio"><input type="radio" name="sold" disabled=${!owner} checked=${mode === 'mark'} onChange=${() => change('mark')} />
+        <span><b>Показывать с пометкой «Закончилось»</b><span class="hint">Гость видит, что блюдо бывает, но сейчас его нет.</span></span></label>
+      <label class="radio"><input type="radio" name="sold" disabled=${!owner} checked=${mode === 'hide'} onChange=${() => change('hide')} />
+        <span><b>Скрывать</b><span class="hint">Блюдо пропадает с планшетов, пока его не уберут из стоп-листа.</span></span></label>
+      <p class="hint">Стоп-лист проверяется раз в минуту.${owner ? '' : ' Менять эту настройку может владелец.'}</p>
+    <//>
+    ${owner && html`<${UsersSection} ctx=${ctx} />`}
+    ${owner && html`<${MediaSection} ctx=${ctx} />`}
+    ${owner && html`<${BackupsSection} ctx=${ctx} />`}
+    <${PasswordSection} ctx=${ctx} />
+  <//>`;
+}
+
+function PasswordSection({ ctx }) {
+  const [form, setForm] = useState({ current: '', next: '', repeat: '' });
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (form.next !== form.repeat) return ctx.notify('Новые пароли не совпадают', true);
+    setBusy(true);
+    try {
+      await api('POST', '/api/admin/me/password', { current: form.current, next: form.next });
+      ctx.notify('Пароль изменён — войдите с новым паролем');
+      ctx.loggedOut();
+    } catch (err) {
+      ctx.notify(err.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const field = (k, label, auto) => html`<div class="field"><label for=${`pw-${k}`}>${label}</label>
+    <input id=${`pw-${k}`} type="password" autocomplete=${auto} value=${form[k]} onInput=${(e) => setForm({ ...form, [k]: e.target.value })} required /></div>`;
+  return html`<${Section} title=${`Мой пароль (${ctx.me.login})`}>
+    <form onSubmit=${submit}>
+      ${field('current', 'Текущий пароль', 'current-password')}
+      ${field('next', 'Новый пароль (не короче 10 символов)', 'new-password')}
+      ${field('repeat', 'Новый пароль ещё раз', 'new-password')}
+      <button class="btn" disabled=${busy}>Сменить пароль</button>
+      <p class="hint">После смены пароля все сеансы этого пользователя завершаются.</p>
+    </form>
+  <//>`;
+}
+
+/** Показывает пароль один раз. */
+function PasswordReveal({ value, onDone }) {
+  return html`<div class="alert ok reveal">
+    Пароль: <code>${value}</code><br />Передайте его сотруднику — повторно он не показывается.
+    <div><button class="btn small" onClick=${() => navigator.clipboard?.writeText(value)}>Скопировать</button> <button class="btn small" onClick=${onDone}>Готово</button></div>
+  </div>`;
+}
+
+function UsersSection({ ctx }) {
+  const [users, setUsers] = useState(null);
+  const [form, setForm] = useState({ login: '', role: 'manager' });
+  const [secret, setSecret] = useState(null);
+  const load = () => api('GET', '/api/admin/users').then((r) => setUsers(r.users)).catch((err) => ctx.notify(err.message, true));
+  useEffect(() => { load(); }, []);
+  const act = async (fn, ok) => {
+    try {
+      const r = await fn();
+      if (r?.password) setSecret(r.password);
+      await load();
+      if (ok) ctx.notify(ok);
+    } catch (err) {
+      ctx.notify(err.message, true);
+    }
+  };
+  const create = (e) => {
+    e.preventDefault();
+    act(() => api('POST', '/api/admin/users', form), `Пользователь ${form.login} создан`).then(() => setForm({ login: '', role: 'manager' }));
+  };
+  return html`<${Section} title="Пользователи">
+    ${secret && html`<${PasswordReveal} value=${secret} onDone=${() => setSecret(null)} />`}
+    ${users && html`<table class="users">
+      <thead><tr><th>Логин</th><th>Роль</th><th>Был в админке</th><th></th></tr></thead>
+      <tbody>${users.map((u) => html`<tr key=${u.login}>
+        <td>${u.login}${u.login === ctx.me.login ? ' (вы)' : ''}</td>
+        <td><select disabled=${u.login === ctx.me.login} value=${u.role}
+          onChange=${(e) => act(() => api('PATCH', `/api/admin/users/${u.login}`, { role: e.target.value }), 'Роль изменена')}>
+          <option value="manager">менеджер</option><option value="owner">владелец</option></select></td>
+        <td>${u.lastSeenAt ? ago(u.lastSeenAt) : '—'}</td>
+        <td class="row-actions">${u.login !== ctx.me.login && html`
+          <button class="btn small" onClick=${() => confirm(`Сбросить пароль ${u.login}? Его сеансы завершатся.`) && act(() => api('POST', `/api/admin/users/${u.login}/password`))}>Новый пароль</button>
+          <button class="btn small danger" onClick=${() => confirm(`Удалить пользователя ${u.login}?`) && act(() => api('DELETE', `/api/admin/users/${u.login}`), 'Пользователь удалён')}>Удалить</button>`}</td>
+      </tr>`)}</tbody>
+    </table>`}
+    <form class="inline-form" onSubmit=${create}>
+      <input type="text" placeholder="логин (латиница)" value=${form.login} onInput=${(e) => setForm({ ...form, login: e.target.value })} required minlength="3" maxlength="32" />
+      <select value=${form.role} onChange=${(e) => setForm({ ...form, role: e.target.value })}><option value="manager">менеджер</option><option value="owner">владелец</option></select>
+      <button class="btn">Добавить</button>
+    </form>
+    <p class="hint">Менеджер: фото, тексты, порядок, публикация. Владелец — ещё откат публикаций, настройки, пользователи, обслуживание.</p>
+  <//>`;
+}
+
+function MediaSection({ ctx }) {
+  const [plan, setPlan] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const check = async () => {
+    setBusy(true);
+    try { setPlan((await api('GET', '/api/admin/maintenance/media')).plan); } catch (err) { ctx.notify(err.message, true); } finally { setBusy(false); }
+  };
+  const total = plan ? plan.media + plan.orphanFiles + plan.iikoFiles + plan.tmpFiles : 0;
+  const run = async () => {
+    if (!confirm(`Удалить неиспользуемые фото (${mb(plan.bytes)})? Фото из черновика и истории публикаций не удаляются.`)) return;
+    setBusy(true);
+    try {
+      const { result } = await api('POST', '/api/admin/maintenance/media/cleanup');
+      ctx.notify(`Удалено файлов: ${result.removedFiles}, освобождено ${mb(result.bytes)}`);
+      setPlan(null);
+    } catch (err) {
+      ctx.notify(err.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return html`<${Section} title="Неиспользуемые фото">
+    <p class="hint">Удаляются только фото, которых нет ни в черновике, ни в одной публикации из истории (иначе откат показал бы пустые карточки), и загруженные больше ${plan?.graceHours ?? 24} ч назад.</p>
+    ${plan && html`<div class=${`alert ${total ? 'warn' : 'ok'}`}>${total
+      ? `Можно удалить: фото ${plan.media}, лишних файлов ${plan.orphanFiles + plan.tmpFiles}, старых фото iiko ${plan.iikoFiles} — ${mb(plan.bytes)}. Используются: ${plan.kept.referenced}.`
+      : `Удалять нечего. Фото в базе: ${plan.kept.media}, используются: ${plan.kept.referenced}.`}</div>`}
+    <div class="row-actions">
+      <button class="btn" onClick=${check} disabled=${busy}>Проверить</button>
+      ${plan && total > 0 && html`<button class="btn danger" onClick=${run} disabled=${busy}>Удалить</button>`}
+    </div>
+  <//>`;
+}
+
+function BackupsSection({ ctx }) {
+  const [list, setList] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [checked, setChecked] = useState({});
+  const load = () => api('GET', '/api/admin/backups').then(setList).catch((err) => ctx.notify(err.message, true));
+  useEffect(() => { load(); }, []);
+  const create = async () => {
+    setBusy(true);
+    try {
+      const r = await api('POST', '/api/admin/backups');
+      ctx.notify(`Копия ${r.name} создана`);
+      await load();
+    } catch (err) {
+      ctx.notify(err.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const verify = async (name) => {
+    setChecked({ ...checked, [name]: 'проверяем…' });
+    try {
+      const r = await api('POST', `/api/admin/backups/${name}/verify`);
+      setChecked((c) => ({ ...c, [name]: r.ok ? 'в порядке ✓' : `ошибки: ${r.errors.join('; ')}` }));
+    } catch (err) {
+      setChecked((c) => ({ ...c, [name]: err.message }));
+    }
+  };
+  return html`<${Section} title="Резервные копии">
+    <p class="hint">Автокопия создаётся раз в сутки. Восстановление — на сервере при остановленном Restohub: <code>${'npm run backup -- restore <имя>'}</code> (см. README).</p>
+    <div class="row-actions"><button class="btn" onClick=${create} disabled=${busy}>${busy ? 'Создаём…' : 'Создать копию сейчас'}</button></div>
+    ${list && (list.backups.length
+      ? html`<ul class="history">${list.backups.map((b) => html`<li key=${b.name}>
+          <span class="meta">${b.kind === 'auto' ? 'Авто' : 'Вручную'} · ${when(b.createdAt)}<small>${b.error ?? `${mb(b.bytes)} · публикаций ${b.counts.publications}, фото ${b.counts.media}`}${checked[b.name] ? ` · ${checked[b.name]}` : ''}</small></span>
+          <button class="btn small" onClick=${() => verify(b.name)}>Проверить</button>
+        </li>`)}</ul>`
+      : html`<p class="hint">Копий пока нет. Папка: ${list.dir}</p>`)}
   <//>`;
 }
 
@@ -531,29 +707,33 @@ function Preview({ onClose }) {
 
 // ---------- Список ----------
 
-function Sidebar({ categories, data, sel, ctx, changed, mismatches }) {
+function Sidebar({ categories, data, sel, ctx, changed, mismatches, filter, setFilter }) {
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
   const flagged = useMemo(
     () => categories.map((c) => ({ ...c, items: c.items.map((i) => ({ ...i, flags: itemFlags(i, data, changed, mismatches) })) })),
     [categories, data],
   );
   const counts = Object.fromEntries(FILTERS.map(([key, , fn]) => [key, flagged.flatMap((c) => c.items).filter((i) => fn(i.flags)).length]));
   const q = query.trim().toLowerCase();
-  const test = FILTERS.find(([k]) => k === filter)[2];
+  // Если у выбранного фильтра не осталось блюд (например, расхождение цен исправили), показываем все.
+  useEffect(() => {
+    if (filter !== 'all' && !counts[filter]) setFilter('all');
+  }, [filter, counts[filter]]);
+  const active = filter !== 'all' && !counts[filter] ? 'all' : filter;
+  const test = FILTERS.find(([k]) => k === active)[2];
 
   return html`<aside class="sidebar">
     <div class="sidebar-head">
       <input class="search" type="search" placeholder="Поиск блюда" value=${query} onInput=${(e) => setQuery(e.target.value)} />
       <div class="filters">
-        ${FILTERS.filter(([k]) => k === 'all' || counts[k] > 0).map(([k, label]) => html`<button class="chip" aria-pressed=${filter === k} onClick=${() => setFilter(k)}>${label}<span class="n">${counts[k]}</span></button>`)}
+        ${FILTERS.filter(([k]) => k === 'all' || counts[k] > 0).map(([k, label]) => html`<button class="chip" aria-pressed=${active === k} onClick=${() => setFilter(k)}>${label}<span class="n">${counts[k]}</span></button>`)}
       </div>
       <button class="btn small" onClick=${() => ctx.select({ type: 'categories' })}>Порядок категорий</button>
     </div>
     <div class="list">
       ${flagged.map((c) => {
         const items = c.items.filter((i) => test(i.flags) && (!q || i.name.toLowerCase().includes(q) || (data.draft.items[i.id]?.title ?? '').toLowerCase().includes(q)));
-        if (!items.length && (filter !== 'all' || q)) return null;
+        if (!items.length && (active !== 'all' || q)) return null;
         const catHidden = data.draft.categories[c.id]?.hidden;
         return html`<div key=${c.id}>
           <button class="cat-row" aria-current=${sel?.type === 'category' && sel.id === c.id} onClick=${() => ctx.select({ type: 'category', id: c.id })}>
@@ -582,6 +762,32 @@ function Sidebar({ categories, data, sel, ctx, changed, mismatches }) {
   </aside>`;
 }
 
+// ---------- Предупреждения ----------
+
+function Warnings({ status, ctx, onShowPrices }) {
+  const warnings = status.health?.warnings ?? [];
+  if (!warnings.length) return html`<div class="warnings"></div>`;
+  const accept = async (held) => {
+    if (!confirm(`Применить меню из iiko с ${held.count} блюдами вместо ${held.prevCount}? Блюда, которых нет в новом меню, пропадут с планшетов.`)) return;
+    try {
+      await api('POST', '/api/admin/iiko/accept-held');
+      await ctx.reload();
+      ctx.notify('Новое меню из iiko применено');
+    } catch (err) {
+      ctx.notify(err.message, true);
+    }
+  };
+  return html`<div class="warnings" role="alert">
+    ${warnings.map((w) => html`<div class=${`warning ${w.level}`} key=${w.code}>
+      <span>${w.text}</span>
+      ${w.code === 'price_mismatch' && html`<button class="btn small" onClick=${onShowPrices}>Показать блюда</button>`}
+      ${w.code === 'held' && (ctx.me.role === 'owner'
+        ? html`<button class="btn small" onClick=${() => accept(w.held)}>Применить новое меню</button>`
+        : html`<span class="hint">Подтвердить может владелец.</span>`)}
+    </div>`)}
+  </div>`;
+}
+
 // ---------- Приложение ----------
 
 function App() {
@@ -592,6 +798,7 @@ function App() {
   const [panel, setPanel] = useState(null);
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [filter, setFilter] = useState('all');
   const dirtyRef = useRef(false);
   const toastTimer = useRef();
 
@@ -618,7 +825,11 @@ function App() {
     }).catch(() => setMe(null));
     const onUnload = (e) => { if (dirtyRef.current) { e.preventDefault(); e.returnValue = ''; } };
     addEventListener('beforeunload', onUnload);
-    return () => removeEventListener('beforeunload', onUnload);
+    // Статус синхронизации обновляется раз в минуту: предупреждение об устаревших данных появится само.
+    const poll = setInterval(() => {
+      api('GET', '/api/status').then((status) => setData((d) => (d ? { ...d, status } : d))).catch(() => {});
+    }, 60000);
+    return () => { removeEventListener('beforeunload', onUnload); clearInterval(poll); };
   }, []);
 
   const select = (next) => {
@@ -627,7 +838,8 @@ function App() {
     setSel(next);
   };
   const addMedia = (m) => setData((d) => ({ ...d, media: { ...d.media, [m.id]: m } }));
-  const ctx = { reload, notify, select, addMedia, dirtyRef };
+  const loggedOut = () => { dirtyRef.current = false; setPanel(null); setMe(null); setData(null); };
+  const ctx = { reload, notify, select, addMedia, dirtyRef, me, loggedOut };
 
   if (me === undefined) return null;
   if (!me) return html`<${Login} setupRequired=${setupRequired} onLogin=${(u) => { setMe(u); reload(); }} /><${Toast} toast=${toast} />`;
@@ -665,16 +877,15 @@ function App() {
   const logout = async () => {
     if (dirtyRef.current && !confirm('Есть несохранённые изменения. Выйти без сохранения?')) return;
     await api('POST', '/api/admin/logout').catch(() => {});
-    setMe(null);
-    setData(null);
+    loggedOut();
   };
 
   return html`<div class="layout">
     <header class="topbar">
       <span class="brand">Restohub<small>${data.restaurant.name}</small></span>
-      ${st.lastError
-        ? html`<span class="pill bad" title=${st.lastError}>iiko: ошибка</span>`
-        : html`<span class="pill" title="Последняя успешная синхронизация">iiko: ${when(st.lastSuccessAt)}</span>`}
+      <span class=${`pill ${st.health?.menu?.stale ? 'bad' : st.lastError ? 'warn' : ''}`}
+        title=${`Последняя успешная синхронизация с iiko: ${when(st.lastSuccessAt)}${st.lastError ? `\nОшибка: ${st.lastError}` : ''}`}>
+        iiko: ${ago(st.lastSuccessAt)}</span>
       ${st.stopList?.count > 0 && html`<span class="pill warn">Закончилось: ${st.stopList.count}</span>`}
       <span class="pill hide-narrow" style="background:var(--cream);color:var(--cocoa-soft)">Планшетов онлайн: ${st.tablets}</span>
       <span class="spacer"></span>
@@ -685,11 +896,12 @@ function App() {
       <button class=${`btn ${data.changes.length ? 'primary' : ''}`} onClick=${() => setPanel('publish')}>
         Публикация ${data.changes.length > 0 && html`<span class="count">${data.changes.length}</span>`}
       </button>
-      <button class="btn" onClick=${logout} title=${`Вы вошли как ${me.login}`}>Выйти</button>
+      <button class="btn" onClick=${logout} title=${`Вы вошли как ${me.login} (${me.role === 'owner' ? 'владелец' : 'менеджер'})`}>Выйти</button>
       </div>
     </header>
+    <${Warnings} status=${st} ctx=${ctx} onShowPrices=${() => { setFilter('price'); select(null); }} />
     <div class=${`main ${sel ? 'has-selection' : ''}`}>
-      <${Sidebar} categories=${categories} data=${data} sel=${sel} ctx=${ctx} changed=${changed} mismatches=${mismatches} />
+      <${Sidebar} categories=${categories} data=${data} sel=${sel} ctx=${ctx} changed=${changed} mismatches=${mismatches} filter=${filter} setFilter=${setFilter} />
       <main class="editor">
         ${editor ?? html`<div class="empty">
           <h2>Выберите блюдо или категорию</h2>

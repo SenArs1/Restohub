@@ -16,7 +16,9 @@
     "admin:user": "node scripts/admin-user.js",
     "backup": "node scripts/backup.js",
     "media:cleanup": "node scripts/media-cleanup.js",
-    "e2e:offline": "node test/e2e/offline.e2e.mjs"
+    "e2e:offline": "node test/e2e/offline.e2e.mjs",
+    "e2e:admin": "node test/e2e/admin.e2e.mjs",
+    "e2e": "node test/e2e/admin.e2e.mjs && node test/e2e/offline.e2e.mjs"
   },
   "dependencies": {
     "htm": "^3.1.1",

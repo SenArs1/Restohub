@@ -24,11 +24,18 @@
     td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .hint { margin: 14px 0 0; color: var(--cocoa-soft); font-size: 14px; }
     .muted { color: var(--cocoa-soft); font-size: 13px; }
+    .warn-item { border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; }
+    .warn-item.error { background: #f8e3dd; color: #b4472f; }
+    .warn-item.warn { background: #fbeee2; color: #9a5b12; }
   </style>
 </head>
 <body>
   <main class="page">
     <h1>Restohub · состояние</h1>
+    <section class="panel" id="warnings-panel" hidden>
+      <h2>Требует внимания</h2>
+      <div id="warnings"></div>
+    </section>
     <section class="panel">
       <h2>Синхронизация с iiko</h2>
       <dl class="rows" id="sync"><dt>Загрузка…</dt><dd></dd></dl>
@@ -45,11 +52,18 @@
     let currency = '₽';
     const money = (v) => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v)} ${esc(currency)}`;
 
+    const age = (m) => (m === null || m === undefined ? '' : m < 1 ? ' (только что)' : ` (${m} мин назад)`);
+
     function render(s) {
       const source = { iiko: 'iikoCloud', demo: 'демо-данные' }[s.source] ?? s.source;
+      const h = s.health ?? { warnings: [], menu: {}, stopList: {} };
+      const wp = document.getElementById('warnings-panel');
+      wp.hidden = !h.warnings.length;
+      document.getElementById('warnings').innerHTML = h.warnings.map((w) => `<div class="warn-item ${w.level}">${esc(w.text)}</div>`).join('');
       document.getElementById('sync').innerHTML = `
         <dt>Источник</dt><dd>${esc(source)}</dd>
-        <dt>Последняя успешная</dt><dd>${esc(when(s.lastSuccessAt))}</dd>
+        <dt>Меню из iiko</dt><dd class="${h.menu.stale ? 'bad' : 'ok'}">${esc(when(s.lastSuccessAt))}${age(h.menu.ageMin)}${h.menu.stale ? ' — устарело' : ''}</dd>
+        <dt>Стоп-лист</dt><dd class="${h.stopList.stale && s.source !== 'demo' ? 'bad' : 'ok'}">${s.source === 'demo' ? '—' : `${esc(when(s.stopList?.lastSuccessAt))}${age(h.stopList.ageMin)}, закончилось: ${s.stopList?.count ?? 0}`}</dd>
         <dt>Ошибка</dt><dd class="${s.lastError ? 'bad' : 'ok'}">${s.lastError ? esc(s.lastError) : 'нет'}</dd>
         <dt>Версия меню</dt><dd>${esc(s.version ?? '—')}</dd>
         <dt>Планшетов онлайн</dt><dd>${s.tablets}</dd>`;
